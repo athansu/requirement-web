@@ -1,0 +1,12 @@
+*.log
+.DS_Store
+
+node_modules/
+dist/
+
+backend/.env
+frontend/.env
+frontend/.env.local
+frontend/.env.production.local
+frontend/.env.development.local
+

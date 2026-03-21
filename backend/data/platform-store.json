@@ -1,0 +1,158 @@
+{
+  "users": [
+    {
+      "id": "56fca258-64ee-416f-b703-17d274df3ead",
+      "email": "smoke_1773212312005@example.com",
+      "name": "Smoke",
+      "passwordHash": "680737037d144ba9a522c781487280a2:ef1a5cba2a32d853a2da5597497bd6ad6210607061f8f9ccf5c187c1f2e80ba7e8103a9ea4e3585d9cf241f7202045bc5e4cdc63c1b0c1cb1b616dd508dfa9cd",
+      "createdAt": "2026-03-11T06:58:32.095Z",
+      "updatedAt": "2026-03-11T06:58:32.096Z"
+    },
+    {
+      "id": "dcf2b174-454c-43c5-845e-22db6c373291",
+      "email": "monthly_1773299729156@example.com",
+      "name": "monthly_1773299729156",
+      "passwordHash": "35dde454516f43b696f55b50c5ae9d86:d532652d1b3ce3e1165e86ba55f67bd8aff6a04244d7985f82b3b4f8a70d5921015d4f0075c21fea7761744816c843cb76b48bbc5b321cd15acb69570a1f9bab",
+      "createdAt": "2026-03-12T07:15:29.188Z",
+      "updatedAt": "2026-03-12T07:15:29.188Z"
+    },
+    {
+      "id": "5a799a8f-5cde-48e0-a384-9c4d1168fb65",
+      "email": "502263982@qq.com",
+      "name": "su",
+      "passwordHash": "e00b54a22dd041a7aee5a0017bcc6938:88e3d7a6b5b304225d17a5b2f213e53ed8f964f69f94f939b3cac108b567e49aeb0d3645cbf63c00d421cfa6382e5eb351ee8b5264f4f575d425e4ffe7d3ef08",
+      "createdAt": "2026-03-18T15:09:02.013Z",
+      "updatedAt": "2026-03-18T15:32:08.247Z"
+    }
+  ],
+  "refreshTokens": [
+    [
+      "a8c35169-1dcf-4d51-8a54-c103a4c693f5",
+      {
+        "userId": "56fca258-64ee-416f-b703-17d274df3ead",
+        "expiresAt": 1775804312097,
+        "createdAt": 1773212312097
+      }
+    ],
+    [
+      "b8877f4c-c81e-4cb8-9a87-86f6aaff0c32",
+      {
+        "userId": "dcf2b174-454c-43c5-845e-22db6c373291",
+        "expiresAt": 1775891729188,
+        "createdAt": 1773299729188
+      }
+    ],
+    [
+      "5567f6e5-b6e7-487b-947d-a08141234693",
+      {
+        "userId": "5a799a8f-5cde-48e0-a384-9c4d1168fb65",
+        "expiresAt": 1776438542014,
+        "createdAt": 1773846542014
+      }
+    ],
+    [
+      "80685574-21b0-485a-b0e8-7825ca08eb82",
+      {
+        "userId": "5a799a8f-5cde-48e0-a384-9c4d1168fb65",
+        "expiresAt": 1776439928247,
+        "createdAt": 1773847928247
+      }
+    ]
+  ],
+  "subscriptions": [
+    {
+      "userId": "56fca258-64ee-416f-b703-17d274df3ead",
+      "planId": "free",
+      "cycle": "monthly",
+      "status": "active",
+      "renewAt": null,
+      "startedAt": "2026-03-11T06:58:32.096Z",
+      "updatedAt": "2026-03-11T06:58:32.096Z"
+    },
+    {
+      "userId": "dcf2b174-454c-43c5-845e-22db6c373291",
+      "planId": "free",
+      "cycle": "monthly",
+      "status": "none",
+      "renewAt": null,
+      "startedAt": "2026-03-12T07:15:29.188Z",
+      "updatedAt": "2026-03-12T07:15:29.188Z"
+    },
+    {
+      "userId": "5a799a8f-5cde-48e0-a384-9c4d1168fb65",
+      "planId": "free",
+      "cycle": "monthly",
+      "status": "none",
+      "renewAt": null,
+      "startedAt": "2026-03-18T15:09:02.014Z",
+      "updatedAt": "2026-03-18T15:09:02.014Z"
+    }
+  ],
+  "usageByUserMonth": [
+    {
+      "period": "2026-03-11",
+      "userId": "56fca258-64ee-416f-b703-17d274df3ead",
+      "generateCount": 1,
+      "reviseCount": 0,
+      "tokenCount": 9
+    },
+    {
+      "period": "2026-03",
+      "userId": "dcf2b174-454c-43c5-845e-22db6c373291",
+      "generateCount": 1,
+      "reviseCount": 0,
+      "tokenCount": 5
+    },
+    {
+      "period": "2026-03",
+      "userId": "5a799a8f-5cde-48e0-a384-9c4d1168fb65",
+      "generateCount": 1,
+      "reviseCount": 0,
+      "tokenCount": 49
+    }
+  ],
+  "anonUsageByMonth": [
+    {
+      "period": "2026-03",
+      "fingerprint": "fp_336a6f83-3ded-45de-a8f2-014439cd7d96",
+      "ip": "::ffff:127.0.0.1",
+      "generateCount": 1,
+      "reviseCount": 0,
+      "tokenCount": 49,
+      "claimedByUserId": "5a799a8f-5cde-48e0-a384-9c4d1168fb65"
+    }
+  ],
+  "paymentEventsByUser": [
+    [
+      "5a799a8f-5cde-48e0-a384-9c4d1168fb65",
+      [
+        {
+          "id": "b39ee9ae-6901-4cb9-8941-2960eabe8388",
+          "createdAt": "2026-03-18T15:09:02.069Z",
+          "provider": "stripe",
+          "type": "subscription_checkout_created",
+          "planId": "pro",
+          "cycle": "monthly",
+          "status": "pending",
+          "sessionId": "9360bba6-7062-4182-aa3f-2e35ab143847",
+          "amountCny": 99,
+          "amountUsd": 15
+        }
+      ]
+    ]
+  ],
+  "anonTrialByFingerprint": [
+    [
+      "fp_smoke_1773299650562",
+      "2026-03-12T07:14:10.594Z"
+    ]
+  ],
+  "anonTrialByIp": [
+    [
+      "::ffff:127.0.0.1",
+      "2026-03-12T07:14:10.595Z"
+    ]
+  ],
+  "anonTrialTickets": [],
+  "updatedAt": "2026-03-18T15:32:08.329Z"
+}
