@@ -457,8 +457,12 @@ export function Home({ onGenerate }: HomeProps) {
 
       if (statusRes.status === 'completed') {
         const doc = statusRes.document;
-        if (typeof doc === 'string' && doc.trim()) {
-          handleGenerationSuccess(doc);
+        const resolvedDoc =
+          (typeof doc === 'string' && doc.trim())
+            ? doc.trim()
+            : latestDoc.trim();
+        if (resolvedDoc) {
+          handleGenerationSuccess(resolvedDoc);
           return;
         }
         setLoading(false);
