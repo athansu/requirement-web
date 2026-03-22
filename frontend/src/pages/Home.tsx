@@ -457,7 +457,7 @@ export function Home({ onGenerate }: HomeProps) {
 
       if (statusRes.status === 'completed') {
         const doc = statusRes.document;
-        if (statusRes.outputLevel === 'final' && typeof doc === 'string' && doc.trim()) {
+        if (typeof doc === 'string' && doc.trim()) {
           handleGenerationSuccess(doc);
           return;
         }

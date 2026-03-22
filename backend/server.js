@@ -976,13 +976,13 @@ function parseRevisionConsistencyResult(raw, fallbackDocument) {
           .filter((item) => item.section && item.summary)
       : [];
     return {
-      finalDocument: finalDocument || fallbackDocument,
+      finalDocument: normalizePrimarySectionNumbers(finalDocument || fallbackDocument),
       linkedUpdates,
       consistencyUpdated: linkedUpdates.length > 0,
     };
   } catch {
     return {
-      finalDocument: text || fallbackDocument,
+      finalDocument: normalizePrimarySectionNumbers(text || fallbackDocument),
       linkedUpdates: [],
       consistencyUpdated: false,
     };
@@ -1149,6 +1149,27 @@ function mergeContinuation(partialDocument, continuation) {
   if (!right) return left;
   if (left.endsWith(right)) return left;
   return `${left}\n\n${right}`;
+}
+
+function escapeRegExp(input) {
+  return String(input || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function normalizePrimarySectionNumbers(document) {
+  const source = String(document || '').trim();
+  if (!source) return source;
+  let normalized = source;
+  let seq = 1;
+  for (const heading of REQUIRED_SECTION_HEADINGS) {
+    const pattern = new RegExp(
+      `^\\s{0,3}##\\s*(?:\\d+\\.\\s*)?(${escapeRegExp(heading)}(?:[^\\n]*))$`,
+      'm'
+    );
+    if (!pattern.test(normalized)) continue;
+    normalized = normalized.replace(pattern, `## ${seq}. $1`);
+    seq += 1;
+  }
+  return normalized;
 }
 
 function isRetryableModelError(error) {
@@ -1396,7 +1417,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
       if (doc) return doc;
       throw error;
     });
-    doc = draftRes;
+    doc = normalizePrimarySectionNumbers(draftRes);
     onProgress(55, '初稿已产出，可先预览', {
       stage: 'running_complete',
       outputLevel: 'draft',
@@ -1492,7 +1513,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
       });
       return doc;
     });
-    doc = completedDoc;
+    doc = normalizePrimarySectionNumbers(completedDoc);
   }
 
   const beforeConsistency = validateDocumentCompleteness(doc);
@@ -1549,6 +1570,8 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
       return doc;
     });
   }
+
+  doc = normalizePrimarySectionNumbers(doc);
 
   const finalCheck = validateDocumentCompleteness(doc);
   const isFinal = !finalCheck.incomplete;
@@ -2531,7 +2554,7 @@ app.post('/api/document/revise', attachOptionalAuth, attachPlanInfo, asyncRoute(
       },
       { allowFallback: true, fallbackAttempts: 0, maxFallbackAttempts: 1 }
     );
-    const appliedDoc = typeof applied === 'string' ? applied.trim() : '';
+    const appliedDoc = normalizePrimarySectionNumbers(typeof applied === 'string' ? applied.trim() : '');
     if (!appliedDoc) return res.status(500).json({ success: false, message: '修订结果为空' });
     const planInfo = resolveRequestPlanInfo(req);
     return res.json({
@@ -2559,7 +2582,7 @@ app.post('/api/document/revise', attachOptionalAuth, attachPlanInfo, asyncRoute(
         degraded: true,
         mode: 'local_only',
         message: `修订模型超时或失败，已返回规则兜底版本：${msg}`,
-        document: fallback.document,
+        document: normalizePrimarySectionNumbers(fallback.document),
         revisionReport: {
           applied: fallback.applied,
           consistencyUpdated: false,
