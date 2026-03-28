@@ -981,19 +981,19 @@ function parseRevisionConsistencyResult(raw, fallbackDocument) {
           }))
           .filter((item) => item.section && item.summary)
       : [];
-    const candidate = normalizePrimarySectionNumbers(finalDocument || fallbackDocument);
+    const candidate = forceNineSectionDocument(finalDocument || fallbackDocument);
     return {
       finalDocument: hasNewPrimarySectionTitles(fallbackDocument, candidate)
-        ? normalizePrimarySectionNumbers(fallbackDocument)
+        ? forceNineSectionDocument(fallbackDocument)
         : candidate,
       linkedUpdates,
       consistencyUpdated: linkedUpdates.length > 0,
     };
   } catch {
-    const candidate = normalizePrimarySectionNumbers(text || fallbackDocument);
+    const candidate = forceNineSectionDocument(text || fallbackDocument);
     return {
       finalDocument: hasNewPrimarySectionTitles(fallbackDocument, candidate)
-        ? normalizePrimarySectionNumbers(fallbackDocument)
+        ? forceNineSectionDocument(fallbackDocument)
         : candidate,
       linkedUpdates: [],
       consistencyUpdated: false,
@@ -1092,6 +1092,64 @@ function pruneToRequiredSections(document) {
     .filter(Boolean);
   if (blocks.length === 0) return source;
   return blocks.join('\n\n').trim();
+}
+
+function findLooseHeadingIndex(document, heading, from = 0) {
+  const source = String(document || '');
+  if (!source) return -1;
+  const escaped = escapeRegExp(heading);
+  const patterns = [
+    new RegExp(`^\\s{0,3}#{1,3}\\s*(?:\\d+\\.\\s*)?${escaped}(?:\\s|$)`, 'mi'),
+    new RegExp(`^\\s*(?:\\d+\\.\\s*)?${escaped}(?:\\s|$)`, 'mi'),
+  ];
+  for (const p of patterns) {
+    const slice = source.slice(from);
+    const m = p.exec(slice);
+    if (m && Number.isInteger(m.index)) return from + m.index;
+  }
+  return source.indexOf(heading, from);
+}
+
+function forceNineSectionDocument(document) {
+  const source = String(document || '').trim();
+  if (!source) return source;
+  const ranges = [];
+  let cursor = 0;
+  for (const heading of REQUIRED_SECTION_HEADINGS) {
+    const start = findLooseHeadingIndex(source, heading, cursor);
+    if (start < 0) {
+      ranges.push(null);
+      continue;
+    }
+    ranges.push({ heading, start });
+    cursor = start + heading.length;
+  }
+
+  const sections = [];
+  for (let i = 0; i < REQUIRED_SECTION_HEADINGS.length; i += 1) {
+    const current = ranges[i];
+    if (!current) continue;
+    let nextStart = source.length;
+    for (let j = i + 1; j < ranges.length; j += 1) {
+      if (ranges[j]) {
+        nextStart = ranges[j].start;
+        break;
+      }
+    }
+    const block = source.slice(current.start, nextStart).trim();
+    const heading = REQUIRED_SECTION_HEADINGS[i];
+    const content = block
+      .replace(new RegExp(`^\\s{0,3}#{1,3}\\s*(?:\\d+\\.\\s*)?${escapeRegExp(heading)}(?:\\s|$)`, 'i'), '')
+      .replace(new RegExp(`^\\s*(?:\\d+\\.\\s*)?${escapeRegExp(heading)}(?:\\s|$)`, 'i'), '')
+      .trim();
+    if (!content) continue;
+    sections.push(`## ${i + 1}. ${heading}\n${content}`);
+  }
+
+  if (sections.length === 0) {
+    return normalizePrimarySectionNumbers(pruneToRequiredSections(source));
+  }
+  return normalizePrimarySectionNumbers(sections.join('\n\n').trim());
 }
 
 function validateDocumentCompleteness(document) {
@@ -1667,7 +1725,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
         }
         throw error;
       });
-      doc = normalizePrimarySectionNumbers(segmentDoc);
+      doc = forceNineSectionDocument(segmentDoc);
       onProgress(Math.min(segment.progress + 8, 86), `章节 ${segment.label} 已完成`, {
         stage: segment.stage,
         outputLevel: 'draft',
@@ -1759,7 +1817,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
       });
       return doc;
     });
-    doc = normalizePrimarySectionNumbers(completedDoc);
+    doc = forceNineSectionDocument(completedDoc);
   };
 
   const initialCheck = validateDocumentCompleteness(doc);
@@ -1788,7 +1846,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
             maxFallbackAttempts: MAX_FALLBACK_ATTEMPTS_PER_JOB,
           }
         );
-        const text = normalizePrimarySectionNumbers(typeof repaired === 'string' ? repaired : '');
+        const text = forceNineSectionDocument(typeof repaired === 'string' ? repaired : '');
         if (!text.trim()) throw new Error('统一性修复结果为空');
         if (hasNewPrimarySectionTitles(doc, text)) {
           throw new Error('一致性修复新增了章节标题，已拒绝该结果');
@@ -1816,12 +1874,12 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     });
   }
 
-  doc = normalizePrimarySectionNumbers(pruneToRequiredSections(doc));
+  doc = forceNineSectionDocument(doc);
 
   const repairCheck = validateDocumentCompleteness(doc);
   if (repairCheck.incomplete && doc.trim()) {
     await runTargetedCompletion('统一性修复后');
-    doc = normalizePrimarySectionNumbers(pruneToRequiredSections(doc));
+    doc = forceNineSectionDocument(doc);
   }
 
   const finalCheck = validateDocumentCompleteness(doc);
@@ -2805,7 +2863,7 @@ app.post('/api/document/revise', attachOptionalAuth, attachPlanInfo, asyncRoute(
       },
       { allowFallback: true, fallbackAttempts: 0, maxFallbackAttempts: 1 }
     );
-    const appliedDoc = normalizePrimarySectionNumbers(typeof applied === 'string' ? applied.trim() : '');
+    const appliedDoc = forceNineSectionDocument(typeof applied === 'string' ? applied.trim() : '');
     if (!appliedDoc) return res.status(500).json({ success: false, message: '修订结果为空' });
     const planInfo = resolveRequestPlanInfo(req);
     return res.json({
@@ -2833,7 +2891,7 @@ app.post('/api/document/revise', attachOptionalAuth, attachPlanInfo, asyncRoute(
         degraded: true,
         mode: 'local_only',
         message: `修订模型超时或失败，已返回规则兜底版本：${msg}`,
-        document: normalizePrimarySectionNumbers(fallback.document),
+        document: forceNineSectionDocument(fallback.document),
         revisionReport: {
           applied: fallback.applied,
           consistencyUpdated: false,
