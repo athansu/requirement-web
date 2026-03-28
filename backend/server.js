@@ -981,20 +981,14 @@ function parseRevisionConsistencyResult(raw, fallbackDocument) {
           }))
           .filter((item) => item.section && item.summary)
       : [];
-    const candidate = normalizePrimarySectionNumbers(finalDocument || fallbackDocument);
     return {
-      finalDocument: hasNewPrimarySectionTitles(fallbackDocument, candidate)
-        ? normalizePrimarySectionNumbers(fallbackDocument)
-        : candidate,
+      finalDocument: normalizePrimarySectionNumbers(finalDocument || fallbackDocument),
       linkedUpdates,
       consistencyUpdated: linkedUpdates.length > 0,
     };
   } catch {
-    const candidate = normalizePrimarySectionNumbers(text || fallbackDocument);
     return {
-      finalDocument: hasNewPrimarySectionTitles(fallbackDocument, candidate)
-        ? normalizePrimarySectionNumbers(fallbackDocument)
-        : candidate,
+      finalDocument: normalizePrimarySectionNumbers(text || fallbackDocument),
       linkedUpdates: [],
       consistencyUpdated: false,
     };
@@ -1003,12 +997,7 @@ function parseRevisionConsistencyResult(raw, fallbackDocument) {
 
 function getMissingSections(document) {
   if (!document) return [...REQUIRED_SECTION_HEADINGS];
-  return REQUIRED_SECTION_HEADINGS.filter((heading) => {
-    const escaped = escapeRegExp(heading);
-    const byNumber = new RegExp(`^\\s{0,3}##\\s*\\d+\\.\\s*${escaped}(?:\\s|$)`, 'm');
-    const byTitle = new RegExp(`^\\s{0,3}#{1,2}\\s*${escaped}(?:\\s|$)`, 'm');
-    return !byNumber.test(document) && !byTitle.test(document);
-  });
+  return REQUIRED_SECTION_HEADINGS.filter((heading) => !document.includes(heading));
 }
 
 function hasStructuralGap(document) {
@@ -1017,92 +1006,19 @@ function hasStructuralGap(document) {
   if (!trimmed) return true;
   const tail = trimmed.slice(-220);
   if (/[，、：\-（(]$/.test(trimmed)) return true;
-  if (/['"“‘]$/.test(trimmed)) return true;
   if (/#{1,6}\s*[^\n]*$/.test(tail)) return true;
   if (/\|\s*[-:]+\s*\|?$/.test(tail)) return true;
   if (/功能实现目标|功能详细描述|用户目标|系统行为|商业化路径\s*$/.test(tail)) return true;
-  // basic bracket-balance check to catch truncated tails like "(V1'"
-  const pairs = [
-    ['(', ')'],
-    ['（', '）'],
-    ['[', ']'],
-    ['【', '】'],
-  ];
-  for (const [left, right] of pairs) {
-    const opens = (trimmed.match(new RegExp(escapeRegExp(left), 'g')) || []).length;
-    const closes = (trimmed.match(new RegExp(escapeRegExp(right), 'g')) || []).length;
-    if (opens !== closes) return true;
-  }
   return false;
-}
-
-function getPrimarySectionHeadings(document) {
-  const text = String(document || '');
-  const regex = /^\s{0,3}##\s*(\d+)\.\s*([^\n]+)/gm;
-  const list = [];
-  let m;
-  while ((m = regex.exec(text)) !== null) {
-    list.push({ index: Number(m[1]), title: sanitizeText(m[2], 120) });
-  }
-  return list;
-}
-
-function normalizePrimaryHeadingTitle(title) {
-  return sanitizeText(String(title || '').replace(/^\d+\.\s*/, ''), 160);
-}
-
-function getPrimaryHeadingTitleSet(document) {
-  return new Set(
-    getPrimarySectionHeadings(document)
-      .map((item) => normalizePrimaryHeadingTitle(item.title))
-      .filter(Boolean)
-  );
-}
-
-function hasNewPrimarySectionTitles(baseDocument, candidateDocument) {
-  const baseSet = getPrimaryHeadingTitleSet(baseDocument);
-  const candidateSet = getPrimaryHeadingTitleSet(candidateDocument);
-  if (candidateSet.size > baseSet.size) return true;
-  for (const title of candidateSet) {
-    if (!baseSet.has(title)) return true;
-  }
-  return false;
-}
-
-function hasUnexpectedOrOutOfOrderSections(document) {
-  const headings = getPrimarySectionHeadings(document);
-  if (headings.length === 0) return true;
-  if (headings.length > REQUIRED_SECTION_HEADINGS.length) return true;
-  for (let i = 0; i < headings.length; i += 1) {
-    const expectedIndex = i + 1;
-    const expectedTitle = REQUIRED_SECTION_HEADINGS[i];
-    if (headings[i].index !== expectedIndex) return true;
-    if (!headings[i].title.startsWith(expectedTitle)) return true;
-  }
-  return false;
-}
-
-function pruneToRequiredSections(document) {
-  const source = String(document || '').trim();
-  if (!source) return source;
-  const blocks = REQUIRED_SECTION_HEADINGS
-    .map((heading) => locateSectionByHeading(source, heading))
-    .filter(Boolean)
-    .map((range) => source.slice(range.start, range.end).trim())
-    .filter(Boolean);
-  if (blocks.length === 0) return source;
-  return blocks.join('\n\n').trim();
 }
 
 function validateDocumentCompleteness(document) {
   const missingSections = getMissingSections(document);
   const structureGap = hasStructuralGap(document);
-  const sectionMismatch = hasUnexpectedOrOutOfOrderSections(document);
   return {
     missingSections,
-    hasStructuralGap: structureGap || sectionMismatch,
-    sectionMismatch,
-    incomplete: missingSections.length > 0 || structureGap || sectionMismatch,
+    hasStructuralGap: structureGap,
+    incomplete: missingSections.length > 0 || structureGap,
   };
 }
 
@@ -1252,7 +1168,7 @@ function normalizePrimarySectionNumbers(document) {
   let seq = 1;
   for (const heading of REQUIRED_SECTION_HEADINGS) {
     const pattern = new RegExp(
-      `^\\s{0,3}#{1,2}\\s*(?:\\d+\\.\\s*)?(${escapeRegExp(heading)}(?:[^\\n]*))$`,
+      `^\\s{0,3}##\\s*(?:\\d+\\.\\s*)?(${escapeRegExp(heading)}(?:[^\\n]*))$`,
       'm'
     );
     if (!pattern.test(normalized)) continue;
@@ -1790,9 +1706,6 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
         );
         const text = normalizePrimarySectionNumbers(typeof repaired === 'string' ? repaired : '');
         if (!text.trim()) throw new Error('统一性修复结果为空');
-        if (hasNewPrimarySectionTitles(doc, text)) {
-          throw new Error('一致性修复新增了章节标题，已拒绝该结果');
-        }
         return text;
       },
       1,
@@ -1816,12 +1729,12 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     });
   }
 
-  doc = normalizePrimarySectionNumbers(pruneToRequiredSections(doc));
+  doc = normalizePrimarySectionNumbers(doc);
 
   const repairCheck = validateDocumentCompleteness(doc);
   if (repairCheck.incomplete && doc.trim()) {
     await runTargetedCompletion('统一性修复后');
-    doc = normalizePrimarySectionNumbers(pruneToRequiredSections(doc));
+    doc = normalizePrimarySectionNumbers(doc);
   }
 
   const finalCheck = validateDocumentCompleteness(doc);
