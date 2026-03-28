@@ -17,6 +17,12 @@ import {
   buildGenerateUser,
   CONTINUE_SYSTEM,
   buildContinueUser,
+  STRUCTURE_ANCHOR_SYSTEM,
+  buildStructureAnchorUser,
+  SEGMENT_GENERATE_SYSTEM,
+  buildSegmentGenerateUser,
+  CONSISTENCY_REPAIR_SYSTEM,
+  buildConsistencyRepairUser,
   REVISE_APPLY_SYSTEM,
   buildReviseApplyUser,
   REVISE_CONSISTENCY_SYSTEM,
@@ -1172,6 +1178,94 @@ function normalizePrimarySectionNumbers(document) {
   return normalized;
 }
 
+const SECTION_SEGMENTS = [
+  {
+    label: '1-3',
+    headings: REQUIRED_SECTION_HEADINGS.slice(0, 3),
+    stage: 'running_draft',
+    progress: 45,
+  },
+  {
+    label: '4-6',
+    headings: REQUIRED_SECTION_HEADINGS.slice(3, 6),
+    stage: 'running_complete',
+    progress: 62,
+  },
+  {
+    label: '7-9',
+    headings: REQUIRED_SECTION_HEADINGS.slice(6, 9),
+    stage: 'running_complete',
+    progress: 78,
+  },
+];
+
+function parseStructureAnchors(raw) {
+  const fallbackOutline = REQUIRED_SECTION_HEADINGS.map((section) => ({
+    section,
+    intent: '',
+    mustInclude: [],
+  }));
+  const fallback = { outline: fallbackOutline, glossary: [] };
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!text) return fallback;
+  try {
+    const parsed = JSON.parse(text);
+    const outline = Array.isArray(parsed?.outline)
+      ? parsed.outline
+          .map((item) => ({
+            section: sanitizeText(item?.section, 80),
+            intent: sanitizeText(item?.intent, 400),
+            mustInclude: Array.isArray(item?.mustInclude)
+              ? item.mustInclude
+                  .map((i) => sanitizeText(i, 120))
+                  .filter(Boolean)
+                  .slice(0, 8)
+              : [],
+          }))
+          .filter((item) => item.section)
+      : [];
+    const glossary = Array.isArray(parsed?.glossary)
+      ? parsed.glossary
+          .map((item) => ({
+            term: sanitizeText(item?.term, 80),
+            definition: sanitizeText(item?.definition, 240),
+            aliases: Array.isArray(item?.aliases)
+              ? item.aliases.map((i) => sanitizeText(i, 60)).filter(Boolean).slice(0, 6)
+              : [],
+          }))
+          .filter((item) => item.term)
+      : [];
+    const normalizedOutline = REQUIRED_SECTION_HEADINGS.map((section) => {
+      const matched = outline.find((item) => item.section === section);
+      return matched || { section, intent: '', mustInclude: [] };
+    });
+    return { outline: normalizedOutline, glossary: glossary.slice(0, 16) };
+  } catch {
+    return fallback;
+  }
+}
+
+function extractSegmentContent(raw, headings) {
+  const text = String(raw || '').trim();
+  if (!text) return '';
+  const ranges = headings
+    .map((heading) => locateSectionByHeading(text, heading))
+    .filter(Boolean);
+  if (ranges.length === 0) return text;
+  const picked = ranges
+    .map((range) => text.slice(range.start, range.end).trim())
+    .filter(Boolean);
+  return picked.join('\n\n').trim();
+}
+
+function mergeSegmentDocument(baseDocument, segmentDocument, headings) {
+  const base = String(baseDocument || '').trim();
+  const seg = extractSegmentContent(segmentDocument, headings);
+  if (!seg) return base;
+  if (!base) return seg;
+  return `${base}\n\n${seg}`.trim();
+}
+
 function isRetryableModelError(error) {
   const msg = error?.message || String(error) || '';
   return (
@@ -1348,6 +1442,10 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
 
   let doc = typeof job.latestDocumentSnapshot === 'string' ? job.latestDocumentSnapshot : '';
   let reasoning = typeof job.reasoning === 'string' ? job.reasoning : '';
+  let anchors = {
+    outline: REQUIRED_SECTION_HEADINGS.map((section) => ({ section, intent: '', mustInclude: [] })),
+    glossary: [],
+  };
 
   if (!reasoning && answers.length > 0 && !skipReasoning) {
     onProgress(20, '正在推理需求边界', {
@@ -1373,63 +1471,131 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     }
   }
 
-  const shouldRunDraft = forcedStage === 'draft' || !doc;
-  if (shouldRunDraft) {
-    const draftRes = await runStageWithRetries(
-      async () => {
-        const generated = await requestLLMWithBudgetAndFallback(
-          [
-            { role: 'system', content: GENERATE_SYSTEM },
-            { role: 'user', content: buildGenerateUser(userRequirement, reasoning, answers, scenario) },
-          ],
-          {
-            model: MODEL_V3,
-            fallbackModel: MODEL_V3_FALLBACK || MODEL_R1,
-            stream: false,
-            max_tokens: Math.min(generateMaxTokens, 3200),
-            timeout_ms: getStageTimeout(deadlineAt, DRAFT_MAX_MS, '初稿阶段'),
+  const completeForced = forcedStage === 'complete';
+  const consistencyForced = forcedStage === 'consistency';
+  const shouldRunSegmentedDraft = forcedStage === 'draft' || (!forcedStage && !doc) || (!doc && (completeForced || consistencyForced));
+  if (shouldRunSegmentedDraft) {
+    onProgress(28, '正在锁定结构锚点与术语表', {
+      stage: 'running_draft',
+      stageProgress: 22,
+      overallProgress: 28,
+    });
+    try {
+      const anchorRaw = await requestLLMWithBudgetAndFallback(
+        [
+          { role: 'system', content: STRUCTURE_ANCHOR_SYSTEM },
+          { role: 'user', content: buildStructureAnchorUser(userRequirement, reasoning, answers, scenario) },
+        ],
+        {
+          model: MODEL_V3,
+          fallbackModel: MODEL_V3_FALLBACK || MODEL_R1,
+          stream: false,
+          max_tokens: 2200,
+          timeout_ms: getStageTimeout(deadlineAt, Math.min(DRAFT_MAX_MS, 60000), '结构锚点阶段'),
+        },
+        {
+          allowFallback: true,
+          fallbackAttempts: fallbackState.attempts,
+          maxFallbackAttempts: MAX_FALLBACK_ATTEMPTS_PER_JOB,
+          onFallbackUsed: () => {
+            fallbackState.attempts += 1;
           },
-          {
-            allowFallback: true,
-            fallbackAttempts: fallbackState.attempts,
-            maxFallbackAttempts: MAX_FALLBACK_ATTEMPTS_PER_JOB,
-            onFallbackUsed: () => {
-              fallbackState.attempts += 1;
+        }
+      );
+      anchors = parseStructureAnchors(anchorRaw);
+    } catch (anchorError) {
+      onProgress(30, `结构锚点降级：${anchorError?.message || anchorError}`, {
+        stage: 'running_draft',
+        lastError: anchorError?.message || String(anchorError),
+      });
+    }
+
+    doc = '';
+    for (const segment of SECTION_SEGMENTS) {
+      const segmentDoc = await runStageWithRetries(
+        async () => {
+          const segmentRaw = await requestLLMWithBudgetAndFallback(
+            [
+              { role: 'system', content: SEGMENT_GENERATE_SYSTEM },
+              {
+                role: 'user',
+                content: buildSegmentGenerateUser({
+                  requirement: userRequirement,
+                  scenario,
+                  reasoning,
+                  clarificationAnswers: answers,
+                  existingDocument: doc,
+                  segmentLabel: segment.label,
+                  allowedSections: segment.headings,
+                  outline: anchors.outline,
+                  glossary: anchors.glossary,
+                }),
+              },
+            ],
+            {
+              model: MODEL_V3,
+              fallbackModel: MODEL_V3_FALLBACK || MODEL_R1,
+              stream: false,
+              max_tokens: Math.max(1800, Math.floor(generateMaxTokens * 0.55)),
+              timeout_ms: getStageTimeout(deadlineAt, DRAFT_MAX_MS, `${segment.label} 分段生成`),
             },
-          }
-        );
-        const text = typeof generated === 'string' ? generated.trim() : '';
-        if (!text) throw new Error('初稿为空');
-        return text;
-      },
-      GENERATE_STAGE_MAX_ATTEMPTS,
-      (attempt) => onProgress(30, `正在生成初稿（${attempt}/${GENERATE_STAGE_MAX_ATTEMPTS}）`, {
-        stage: 'running_draft',
-        stageProgress: Math.min(20 + attempt * 25, 70),
-        attempt,
-        maxAttempts: GENERATE_STAGE_MAX_ATTEMPTS,
-      }),
-      (err) => onProgress(30, `初稿阶段重试中：${err?.message || err}`, {
-        stage: 'running_draft',
-        lastError: err?.message || String(err),
-      })
-    ).catch((error) => {
-      if (doc) return doc;
-      throw error;
-    });
-    doc = normalizePrimarySectionNumbers(draftRes);
-    onProgress(55, '初稿已产出，可先预览', {
-      stage: 'running_complete',
-      outputLevel: 'draft',
-      document: doc,
-      latestDocumentSnapshot: doc,
-      stageProgress: 0,
-      overallProgress: 55,
-      reasoning,
-      fallbackAttempts: fallbackState.attempts,
-    });
+            {
+              allowFallback: true,
+              fallbackAttempts: fallbackState.attempts,
+              maxFallbackAttempts: MAX_FALLBACK_ATTEMPTS_PER_JOB,
+              onFallbackUsed: () => {
+                fallbackState.attempts += 1;
+              },
+            }
+          );
+          const merged = mergeSegmentDocument(doc, typeof segmentRaw === 'string' ? segmentRaw : '', segment.headings);
+          if (!merged.trim()) throw new Error(`分段 ${segment.label} 生成为空`);
+          return merged;
+        },
+        GENERATE_STAGE_MAX_ATTEMPTS,
+        (attempt) => onProgress(segment.progress, `正在生成章节 ${segment.label}（${attempt}/${GENERATE_STAGE_MAX_ATTEMPTS}）`, {
+          stage: segment.stage,
+          outputLevel: 'draft',
+          document: doc,
+          latestDocumentSnapshot: doc,
+          stageProgress: Math.min(25 + attempt * 25, 95),
+          overallProgress: segment.progress,
+          attempt,
+          maxAttempts: GENERATE_STAGE_MAX_ATTEMPTS,
+        }),
+        (err) => onProgress(segment.progress, `章节 ${segment.label} 重试中：${err?.message || err}`, {
+          stage: segment.stage,
+          outputLevel: 'draft',
+          document: doc,
+          latestDocumentSnapshot: doc,
+          lastError: err?.message || String(err),
+        })
+      ).catch((error) => {
+        if (doc.trim()) {
+          onProgress(segment.progress, `章节 ${segment.label} 生成未完成，已保留当前可用稿`, {
+            stage: 'completed_partial',
+            outputLevel: 'partial',
+            document: doc,
+            latestDocumentSnapshot: doc,
+            lastError: error?.message || String(error),
+          });
+          return doc;
+        }
+        throw error;
+      });
+      doc = normalizePrimarySectionNumbers(segmentDoc);
+      onProgress(Math.min(segment.progress + 8, 86), `章节 ${segment.label} 已完成`, {
+        stage: segment.stage,
+        outputLevel: 'draft',
+        document: doc,
+        latestDocumentSnapshot: doc,
+        overallProgress: Math.min(segment.progress + 8, 86),
+        fallbackAttempts: fallbackState.attempts,
+        reasoning,
+      });
+    }
   } else {
-    onProgress(55, '已从快照恢复初稿', {
+    onProgress(55, '已从快照恢复可用稿', {
       stage: 'running_complete',
       outputLevel: 'draft',
       document: doc,
@@ -1441,11 +1607,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     });
   }
 
-  const completeForced = forcedStage === 'complete';
-  const consistencyForced = forcedStage === 'consistency';
-  const completeResult = validateDocumentCompleteness(doc);
-
-  if (completeForced || completeResult.incomplete) {
+  const runTargetedCompletion = async (reasonLabel) => {
     const completedDoc = await runStageWithRetries(
       async () => {
         const current = validateDocumentCompleteness(doc);
@@ -1468,8 +1630,8 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
             model: MODEL_V3,
             fallbackModel: MODEL_V3_FALLBACK || MODEL_R1,
             stream: false,
-            max_tokens: Math.max(2048, Math.floor(generateMaxTokens * 0.75)),
-            timeout_ms: getStageTimeout(deadlineAt, CONTINUE_MAX_MS, '补齐阶段'),
+            max_tokens: Math.max(1600, Math.floor(generateMaxTokens * 0.45)),
+            timeout_ms: getStageTimeout(deadlineAt, CONTINUE_MAX_MS, `${reasonLabel}补齐阶段`),
           },
           {
             allowFallback: true,
@@ -1485,17 +1647,17 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
         return merged;
       },
       GENERATE_STAGE_MAX_ATTEMPTS,
-      (attempt) => onProgress(72, `正在补齐缺失章节（${attempt}/${GENERATE_STAGE_MAX_ATTEMPTS}）`, {
+      (attempt) => onProgress(84, `正在定向补齐缺失章节（${attempt}/${GENERATE_STAGE_MAX_ATTEMPTS}）`, {
         stage: 'running_complete',
         outputLevel: 'draft',
         document: doc,
         latestDocumentSnapshot: doc,
-        stageProgress: Math.min(25 + attempt * 30, 95),
-        overallProgress: 72,
+        stageProgress: Math.min(35 + attempt * 20, 95),
+        overallProgress: 84,
         attempt,
         maxAttempts: GENERATE_STAGE_MAX_ATTEMPTS,
       }),
-      (err) => onProgress(72, `补齐阶段重试中：${err?.message || err}`, {
+      (err) => onProgress(84, `定向补齐重试中：${err?.message || err}`, {
         stage: 'running_complete',
         outputLevel: 'draft',
         document: doc,
@@ -1503,7 +1665,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
         lastError: err?.message || String(err),
       })
     ).catch((error) => {
-      onProgress(90, `补齐阶段未完成：${error?.message || error}`, {
+      onProgress(90, `定向补齐未完成：${error?.message || error}`, {
         stage: 'completed_partial',
         outputLevel: 'partial',
         document: doc,
@@ -1514,33 +1676,27 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
       return doc;
     });
     doc = normalizePrimarySectionNumbers(completedDoc);
+  };
+
+  const initialCheck = validateDocumentCompleteness(doc);
+  if (completeForced || initialCheck.incomplete) {
+    await runTargetedCompletion('缺失章节');
   }
 
-  const beforeConsistency = validateDocumentCompleteness(doc);
-  if (consistencyForced || beforeConsistency.hasStructuralGap) {
+  if (doc.trim() && (!completeForced || consistencyForced || validateDocumentCompleteness(doc).incomplete || validateDocumentCompleteness(doc).hasStructuralGap)) {
     doc = await runStageWithRetries(
       async () => {
-        const continuation = await requestLLMWithBudgetAndFallback(
+        const repaired = await requestLLMWithBudgetAndFallback(
           [
-            { role: 'system', content: CONTINUE_SYSTEM },
-            {
-              role: 'user',
-              content: buildContinueUser(
-                userRequirement,
-                doc,
-                reasoning,
-                answers,
-                scenario,
-                validateDocumentCompleteness(doc).missingSections
-              ),
-            },
+            { role: 'system', content: CONSISTENCY_REPAIR_SYSTEM },
+            { role: 'user', content: buildConsistencyRepairUser(doc, anchors.outline, anchors.glossary) },
           ],
           {
             model: MODEL_V3,
             fallbackModel: MODEL_V3_FALLBACK || MODEL_R1,
             stream: false,
-            max_tokens: Math.max(1024, Math.floor(generateMaxTokens * 0.4)),
-            timeout_ms: getStageTimeout(deadlineAt, Math.floor(CONTINUE_MAX_MS * 0.6), '一致性阶段'),
+            max_tokens: Math.max(1200, Math.floor(generateMaxTokens * 0.35)),
+            timeout_ms: getStageTimeout(deadlineAt, Math.floor(CONTINUE_MAX_MS * 0.7), '统一性修复阶段'),
           },
           {
             allowFallback: false,
@@ -1548,19 +1704,21 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
             maxFallbackAttempts: MAX_FALLBACK_ATTEMPTS_PER_JOB,
           }
         );
-        return mergeContinuation(doc, typeof continuation === 'string' ? continuation : '');
+        const text = normalizePrimarySectionNumbers(typeof repaired === 'string' ? repaired : '');
+        if (!text.trim()) throw new Error('统一性修复结果为空');
+        return text;
       },
       1,
-      () => onProgress(88, '正在做结构一致性整理', {
+      () => onProgress(90, '正在做统一性修复', {
         stage: 'running_consistency',
         outputLevel: 'draft',
         document: doc,
         latestDocumentSnapshot: doc,
-        stageProgress: 70,
-        overallProgress: 88,
+        stageProgress: 75,
+        overallProgress: 90,
       })
     ).catch((error) => {
-      onProgress(92, `一致性阶段跳过：${error?.message || error}`, {
+      onProgress(92, `统一性修复跳过：${error?.message || error}`, {
         stage: 'running_consistency',
         outputLevel: 'partial',
         document: doc,
@@ -1572,6 +1730,12 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
   }
 
   doc = normalizePrimarySectionNumbers(doc);
+
+  const repairCheck = validateDocumentCompleteness(doc);
+  if (repairCheck.incomplete && doc.trim()) {
+    await runTargetedCompletion('统一性修复后');
+    doc = normalizePrimarySectionNumbers(doc);
+  }
 
   const finalCheck = validateDocumentCompleteness(doc);
   const isFinal = !finalCheck.incomplete;

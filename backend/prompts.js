@@ -140,6 +140,108 @@ export function buildContinueUser(
   return block;
 }
 
+// ---------- Phase3.1 结构锚点 ----------
+export const STRUCTURE_ANCHOR_SYSTEM = `${PERSONA}
+你的任务：先为 PRD 生成“结构锚点”和“术语表”，用于后续分段生成保持一致。
+
+输出要求：
+- 仅输出 JSON，不要 Markdown，不要代码块。
+- JSON 结构固定为：
+{"outline":[{"section":"章节名","intent":"本章节核心目标","mustInclude":["要点1","要点2"]}],"glossary":[{"term":"术语","definition":"定义","aliases":["别名1","别名2"]}]}
+- outline 必须覆盖 9 个章节名称，章节名必须与下列名称完全一致：
+产品定位、用户画像、核心用户旅程、功能列表、每个功能的详细说明、非功能需求、技术架构建议、AI 能力使用点、商业化路径
+- glossary 保持 6-12 个关键术语，不要冗长。`;
+
+export function buildStructureAnchorUser(requirement, reasoning, clarificationAnswers, scenario) {
+  let block = `${buildScenarioBlock(scenario)}用户需求：\n${requirement}\n\n`;
+  if (reasoning) block += `推理结论：\n${reasoning}\n\n`;
+  if (clarificationAnswers?.length) {
+    block += '澄清回答：\n';
+    clarificationAnswers.forEach(({ q, a }) => {
+      block += `- ${q}\n  ${a || '(未回答)'}\n`;
+    });
+    block += '\n';
+  }
+  block += '请输出结构锚点与术语表 JSON：';
+  return block;
+}
+
+// ---------- Phase3.2 分段正文生成 ----------
+export const SEGMENT_GENERATE_SYSTEM = `${PERSONA}
+你的任务：基于固定结构锚点与术语表，按指定章节范围输出正文。
+
+硬约束：
+- 只输出“本次指定章节范围”的内容，禁止输出范围外章节。
+- 标题格式必须为：## 序号. 章节名
+- 必须遵循术语表，不要引入同义词混写。
+- 不要输出解释或额外说明。
+- 不得输出 HTML 标签；不要用代码块包裹正文或表格。`;
+
+export function buildSegmentGenerateUser(params) {
+  const {
+    requirement,
+    scenario,
+    reasoning,
+    clarificationAnswers,
+    existingDocument,
+    segmentLabel,
+    allowedSections,
+    outline,
+    glossary,
+  } = params;
+  let block = `${buildScenarioBlock(scenario)}用户需求：\n${requirement}\n\n`;
+  if (reasoning) block += `推理结论：\n${reasoning}\n\n`;
+  if (clarificationAnswers?.length) {
+    block += '澄清回答：\n';
+    clarificationAnswers.forEach(({ q, a }) => {
+      block += `- ${q}\n  ${a || '(未回答)'}\n`;
+    });
+    block += '\n';
+  }
+  if (existingDocument) {
+    block += `当前已完成文档（仅供上下文，不得重写）：\n\n${existingDocument}\n\n`;
+  }
+  block += `本次只允许生成章节：${segmentLabel}\n`;
+  block += `允许章节名（必须完全一致）：\n${allowedSections.map((s) => `- ${s}`).join('\n')}\n\n`;
+  if (Array.isArray(outline) && outline.length > 0) {
+    block += `结构锚点（必须遵循）：\n${JSON.stringify(outline, null, 2)}\n\n`;
+  }
+  if (Array.isArray(glossary) && glossary.length > 0) {
+    block += `术语表（必须统一）：\n${JSON.stringify(glossary, null, 2)}\n\n`;
+  }
+  block += '请仅输出本次指定章节的 Markdown 正文：';
+  return block;
+}
+
+// ---------- Phase3.3 全文一致性修复 ----------
+export const CONSISTENCY_REPAIR_SYSTEM = `${PERSONA}
+你的任务：对已生成完整 PRD 做统一性修复。
+
+仅允许做以下修改：
+- 编号顺序与标题规范化
+- 术语统一
+- 前后口径冲突修复
+- 删除重复段落
+
+禁止：
+- 新增产品范围
+- 引入新功能模块
+- 改变 9 部分结构
+
+只输出修复后的完整 Markdown 文档，不要解释。`;
+
+export function buildConsistencyRepairUser(document, outline = [], glossary = []) {
+  let block = `当前完整文档：\n\n${document}\n\n`;
+  if (Array.isArray(outline) && outline.length > 0) {
+    block += `结构锚点：\n${JSON.stringify(outline, null, 2)}\n\n`;
+  }
+  if (Array.isArray(glossary) && glossary.length > 0) {
+    block += `术语表：\n${JSON.stringify(glossary, null, 2)}\n\n`;
+  }
+  block += '请输出修复后的完整 Markdown 文档：';
+  return block;
+}
+
 // ---------- Phase4 按标注修订 ----------
 const REVISE_COMMON_RULES = `通用规则：
 - 不得输出 HTML 标签（例如 <br>），需要换行时直接使用换行符。
