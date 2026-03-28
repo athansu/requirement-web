@@ -227,6 +227,7 @@ export const CONSISTENCY_REPAIR_SYSTEM = `${PERSONA}
 - 新增产品范围
 - 引入新功能模块
 - 改变 9 部分结构
+- 新增或改名任何主章节标题（双井号二级标题）
 
 只输出修复后的完整 Markdown 文档，不要解释。`;
 
