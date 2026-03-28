@@ -205,7 +205,7 @@ export interface GenerateJobCreateRes {
   success: boolean;
   jobId?: string;
   status?: 'queued' | 'running' | 'completed' | 'failed';
-  lifecycle?: 'queued' | 'running_draft' | 'running_complete' | 'running_consistency' | 'completed_final' | 'completed_partial' | 'failed_fatal';
+  lifecycle?: 'queued' | 'running_draft' | 'running_segment_1_3' | 'running_segment_4_6' | 'running_segment_7_9' | 'running_complete' | 'running_consistency' | 'running_consistency_json' | 'completed_final' | 'completed_partial' | 'failed_fatal';
   stage?: string;
   outputLevel?: 'draft' | 'partial' | 'final';
   progress?: number;
@@ -219,6 +219,10 @@ export interface GenerateJobCreateRes {
   lastError?: string;
   fallbackAttempts?: number;
   missingSections?: string[];
+  missingSectionIds?: number[];
+  invalidSectionIds?: number[];
+  completionScore?: number;
+  qualityWarnings?: string[];
   document?: string;
   message?: string;
   plan?: string;
@@ -239,7 +243,7 @@ export interface GenerateJobStatusRes {
   success: boolean;
   jobId?: string;
   status?: 'queued' | 'running' | 'completed' | 'failed';
-  lifecycle?: 'queued' | 'running_draft' | 'running_complete' | 'running_consistency' | 'completed_final' | 'completed_partial' | 'failed_fatal';
+  lifecycle?: 'queued' | 'running_draft' | 'running_segment_1_3' | 'running_segment_4_6' | 'running_segment_7_9' | 'running_complete' | 'running_consistency' | 'running_consistency_json' | 'completed_final' | 'completed_partial' | 'failed_fatal';
   stage?: string;
   outputLevel?: 'draft' | 'partial' | 'final';
   progress?: number;
@@ -253,6 +257,10 @@ export interface GenerateJobStatusRes {
   lastError?: string;
   fallbackAttempts?: number;
   missingSections?: string[];
+  missingSectionIds?: number[];
+  invalidSectionIds?: number[];
+  completionScore?: number;
+  qualityWarnings?: string[];
   document?: string;
   queuePosition?: number;
   message?: string;

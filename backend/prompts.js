@@ -168,14 +168,15 @@ export function buildStructureAnchorUser(requirement, reasoning, clarificationAn
 
 // ---------- Phase3.2 分段正文生成 ----------
 export const SEGMENT_GENERATE_SYSTEM = `${PERSONA}
-你的任务：基于固定结构锚点与术语表，按指定章节范围输出正文。
+你的任务：基于固定结构锚点与术语表，按指定章节范围输出结构化章节 JSON。
 
 硬约束：
-- 只输出“本次指定章节范围”的内容，禁止输出范围外章节。
-- 标题格式必须为：## 序号. 章节名
-- 必须遵循术语表，不要引入同义词混写。
-- 不要输出解释或额外说明。
-- 不得输出 HTML 标签；不要用代码块包裹正文或表格。`;
+- 仅输出 JSON，不要 Markdown、不要代码块、不要解释。
+- JSON 结构固定为：
+{"sections":[{"id":1,"title":"产品定位","content":"..."}]}
+- 只允许输出本次指定的章节 id，禁止输出范围外 id。
+- title 必须与章节白名单完全一致，禁止改名。
+- content 必须是完整自然语言段落，不要半句收尾。`;
 
 export function buildSegmentGenerateUser(params) {
   const {
@@ -202,23 +203,22 @@ export function buildSegmentGenerateUser(params) {
     block += `当前已完成文档（仅供上下文，不得重写）：\n\n${existingDocument}\n\n`;
   }
   block += `本次只允许生成章节：${segmentLabel}\n`;
-  block += `允许章节名（必须完全一致）：\n${allowedSections.map((s) => `- ${s}`).join('\n')}\n\n`;
+  block += `允许章节（id 与 title 必须完全一致）：\n${allowedSections.map((s) => `- id=${s.id}, title=${s.title}`).join('\n')}\n\n`;
   if (Array.isArray(outline) && outline.length > 0) {
     block += `结构锚点（必须遵循）：\n${JSON.stringify(outline, null, 2)}\n\n`;
   }
   if (Array.isArray(glossary) && glossary.length > 0) {
     block += `术语表（必须统一）：\n${JSON.stringify(glossary, null, 2)}\n\n`;
   }
-  block += '请仅输出本次指定章节的 Markdown 正文：';
+  block += '请仅输出本次指定章节的 JSON：';
   return block;
 }
 
 // ---------- Phase3.3 全文一致性修复 ----------
 export const CONSISTENCY_REPAIR_SYSTEM = `${PERSONA}
-你的任务：对已生成完整 PRD 做统一性修复。
+你的任务：对已生成章节集合做统一性修复（仅改内容，不改结构）。
 
 仅允许做以下修改：
-- 编号顺序与标题规范化
 - 术语统一
 - 前后口径冲突修复
 - 删除重复段落
@@ -226,19 +226,24 @@ export const CONSISTENCY_REPAIR_SYSTEM = `${PERSONA}
 禁止：
 - 新增产品范围
 - 引入新功能模块
-- 改变 9 部分结构
+- 新增/删除章节
+- 修改章节 id 或 title
 
-只输出修复后的完整 Markdown 文档，不要解释。`;
+输出要求：
+- 仅输出 JSON，不要 Markdown、不要代码块、不要解释。
+- JSON 结构固定为：
+{"sections":[{"id":1,"title":"产品定位","content":"..."}]}
+- 必须保留输入中的全部章节集合与标题，只允许更新 content。`;
 
-export function buildConsistencyRepairUser(document, outline = [], glossary = []) {
-  let block = `当前完整文档：\n\n${document}\n\n`;
+export function buildConsistencyRepairUser(sectionState, outline = [], glossary = []) {
+  let block = `当前章节状态（JSON）：\n${JSON.stringify(sectionState, null, 2)}\n\n`;
   if (Array.isArray(outline) && outline.length > 0) {
     block += `结构锚点：\n${JSON.stringify(outline, null, 2)}\n\n`;
   }
   if (Array.isArray(glossary) && glossary.length > 0) {
     block += `术语表：\n${JSON.stringify(glossary, null, 2)}\n\n`;
   }
-  block += '请输出修复后的完整 Markdown 文档：';
+  block += '请输出修复后的 sections JSON（仅改 content）：';
   return block;
 }
 

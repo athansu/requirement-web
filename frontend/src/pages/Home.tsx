@@ -79,8 +79,12 @@ const HOME_STATE_TTL_MS = Math.max(Number(import.meta.env.VITE_HOME_STATE_TTL_MS
 function stageLabel(stage: string | undefined) {
   switch (stage) {
     case 'running_draft': return '初稿生成';
+    case 'running_segment_1_3': return '章节 1-3 生成';
+    case 'running_segment_4_6': return '章节 4-6 生成';
+    case 'running_segment_7_9': return '章节 7-9 生成';
     case 'running_complete': return '章节补齐';
     case 'running_consistency': return '一致性整理';
+    case 'running_consistency_json': return '一致性修复';
     case 'completed_final': return '最终完成';
     case 'completed_partial': return '可用初稿';
     case 'failed_fatal': return '任务失败';
@@ -100,7 +104,9 @@ function formatMs(ms: number) {
 
 function getPollDelay(status: string | undefined, stage: string | undefined) {
   if (status === 'queued') return POLL_INTERVAL_QUEUED_MS;
-  if (stage === 'running_complete' || stage === 'running_consistency') return POLL_INTERVAL_FINALIZING_MS;
+  if (stage === 'running_complete' || stage === 'running_consistency' || stage === 'running_consistency_json') {
+    return POLL_INTERVAL_FINALIZING_MS;
+  }
   return POLL_INTERVAL_MS;
 }
 
@@ -127,6 +133,10 @@ interface PersistedHomeState {
   generateElapsedMs: number;
   fallbackAttempts: number;
   missingSections: string[];
+  missingSectionIds: number[];
+  invalidSectionIds: number[];
+  completionScore: number;
+  qualityWarnings: string[];
 }
 
 function readHomeState(): PersistedHomeState {
@@ -153,6 +163,10 @@ function readHomeState(): PersistedHomeState {
       generateElapsedMs: 0,
       fallbackAttempts: 0,
       missingSections: [],
+      missingSectionIds: [],
+      invalidSectionIds: [],
+      completionScore: 0,
+      qualityWarnings: [],
     };
   }
 
@@ -181,6 +195,10 @@ function readHomeState(): PersistedHomeState {
         generateElapsedMs: 0,
         fallbackAttempts: 0,
         missingSections: [],
+        missingSectionIds: [],
+        invalidSectionIds: [],
+        completionScore: 0,
+        qualityWarnings: [],
       };
     }
 
@@ -247,6 +265,23 @@ function readHomeState(): PersistedHomeState {
         : Array.isArray(parsed.missingSections)
         ? parsed.missingSections.filter((item): item is string => typeof item === 'string')
         : [],
+      missingSectionIds: shouldResetGenerating
+        ? []
+        : Array.isArray(parsed.missingSectionIds)
+        ? parsed.missingSectionIds.filter((item): item is number => typeof item === 'number')
+        : [],
+      invalidSectionIds: shouldResetGenerating
+        ? []
+        : Array.isArray(parsed.invalidSectionIds)
+        ? parsed.invalidSectionIds.filter((item): item is number => typeof item === 'number')
+        : [],
+      completionScore:
+        shouldResetGenerating ? 0 : (typeof parsed.completionScore === 'number' ? parsed.completionScore : 0),
+      qualityWarnings: shouldResetGenerating
+        ? []
+        : Array.isArray(parsed.qualityWarnings)
+        ? parsed.qualityWarnings.filter((item): item is string => typeof item === 'string')
+        : [],
     };
   } catch {
     return {
@@ -271,6 +306,10 @@ function readHomeState(): PersistedHomeState {
       generateElapsedMs: 0,
       fallbackAttempts: 0,
       missingSections: [],
+      missingSectionIds: [],
+      invalidSectionIds: [],
+      completionScore: 0,
+      qualityWarnings: [],
     };
   }
 }
@@ -302,6 +341,10 @@ export function Home({ onGenerate }: HomeProps) {
   const [generateElapsedMs, setGenerateElapsedMs] = useState(initialState.generateElapsedMs);
   const [fallbackAttempts, setFallbackAttempts] = useState(initialState.fallbackAttempts);
   const [missingSections, setMissingSections] = useState<string[]>(initialState.missingSections);
+  const [missingSectionIds, setMissingSectionIds] = useState<number[]>(initialState.missingSectionIds);
+  const [invalidSectionIds, setInvalidSectionIds] = useState<number[]>(initialState.invalidSectionIds);
+  const [completionScore, setCompletionScore] = useState(initialState.completionScore);
+  const [qualityWarnings, setQualityWarnings] = useState<string[]>(initialState.qualityWarnings);
 
   const requirement = input.trim();
   const canContinueFill =
@@ -351,6 +394,10 @@ export function Home({ onGenerate }: HomeProps) {
         generateElapsedMs,
         fallbackAttempts,
         missingSections,
+        missingSectionIds,
+        invalidSectionIds,
+        completionScore,
+        qualityWarnings,
       })
     );
   }, [
@@ -375,6 +422,10 @@ export function Home({ onGenerate }: HomeProps) {
     generateElapsedMs,
     fallbackAttempts,
     missingSections,
+    missingSectionIds,
+    invalidSectionIds,
+    completionScore,
+    qualityWarnings,
   ]);
 
   const resetGeneratingState = () => {
@@ -395,6 +446,10 @@ export function Home({ onGenerate }: HomeProps) {
     setGenerateElapsedMs(0);
     setFallbackAttempts(0);
     setMissingSections([]);
+    setMissingSectionIds([]);
+    setInvalidSectionIds([]);
+    setCompletionScore(0);
+    setQualityWarnings([]);
     setLoading(false);
   };
 
@@ -410,6 +465,10 @@ export function Home({ onGenerate }: HomeProps) {
     setStageProgress(100);
     setOverallProgress(100);
     setGenerateRemainingMs(0);
+    setCompletionScore(100);
+    setMissingSectionIds([]);
+    setInvalidSectionIds([]);
+    setQualityWarnings([]);
     setLoading(false);
     setStep('input');
     if (typeof window !== 'undefined') {
@@ -449,6 +508,10 @@ export function Home({ onGenerate }: HomeProps) {
       setGenerateRemainingMs(statusRes.remainingMs ?? 0);
       setFallbackAttempts(statusRes.fallbackAttempts ?? 0);
       setMissingSections(statusRes.missingSections ?? []);
+      setMissingSectionIds(statusRes.missingSectionIds ?? []);
+      setInvalidSectionIds(statusRes.invalidSectionIds ?? []);
+      setCompletionScore(statusRes.completionScore ?? 0);
+      setQualityWarnings(statusRes.qualityWarnings ?? []);
       if (statusRes.queuePosition && statusRes.status === 'queued') {
         setGenerateStepText(`队列中，前方还有 ${statusRes.queuePosition - 1} 个任务`);
       } else {
@@ -582,6 +645,10 @@ export function Home({ onGenerate }: HomeProps) {
       setGenerateRemainingMs(createRes.remainingMs ?? 0);
       setFallbackAttempts(createRes.fallbackAttempts ?? 0);
       setMissingSections([]);
+      setMissingSectionIds([]);
+      setInvalidSectionIds([]);
+      setCompletionScore(0);
+      setQualityWarnings([]);
       await pollGenerateJob(jobId);
     } catch (e) {
       if (
@@ -809,9 +876,19 @@ export function Home({ onGenerate }: HomeProps) {
                 <p>已耗时：{formatMs(generateElapsedMs)}；剩余预算：{formatMs(displayRemainingMs)}</p>
                 <p>阶段重试：{stageAttempt}/{stageMaxAttempts}</p>
                 <p>模型回退次数：{fallbackAttempts}</p>
+                <p>完成度评分：{completionScore}</p>
                 {lastError && <p>最近错误：{lastError}</p>}
                 {missingSections.length > 0 && (
                   <p>缺失章节：{missingSections.join('、')}</p>
+                )}
+                {missingSectionIds.length > 0 && (
+                  <p>缺失章节ID：{missingSectionIds.join(', ')}</p>
+                )}
+                {invalidSectionIds.length > 0 && (
+                  <p>不达标章节ID：{invalidSectionIds.join(', ')}</p>
+                )}
+                {qualityWarnings.length > 0 && (
+                  <p>质量提示：{qualityWarnings.join('；')}</p>
                 )}
               </details>
               <div className="action-row centered">

@@ -15,8 +15,6 @@ import {
   buildReasonUser,
   GENERATE_SYSTEM,
   buildGenerateUser,
-  CONTINUE_SYSTEM,
-  buildContinueUser,
   STRUCTURE_ANCHOR_SYSTEM,
   buildStructureAnchorUser,
   SEGMENT_GENERATE_SYSTEM,
@@ -58,6 +56,10 @@ const REQUIRED_SECTION_HEADINGS = [
   'AI 能力使用点',
   '商业化路径',
 ];
+const SECTION_DEFINITIONS = REQUIRED_SECTION_HEADINGS.map((title, index) => ({ id: index + 1, title }));
+const SECTION_TITLE_BY_ID = new Map(SECTION_DEFINITIONS.map((item) => [item.id, item.title]));
+const MIN_SECTION_CONTENT_CHARS = Math.max(Number(process.env.MIN_SECTION_CONTENT_CHARS) || 120, 40);
+const MIN_SECTION_CONTENT_CHARS_SEGMENT = Math.max(Number(process.env.MIN_SECTION_CONTENT_CHARS_SEGMENT) || 40, 20);
 const GEN_TOTAL_BUDGET_MS = Math.max(Number(process.env.GEN_TOTAL_BUDGET_MS) || 480000, 60000);
 const REASON_MAX_MS = Math.max(Number(process.env.REASON_MAX_MS) || 90000, 5000);
 const GENERATE_MAX_MS = Math.max(Number(process.env.GENERATE_MAX_MS) || 180000, 5000);
@@ -995,31 +997,266 @@ function parseRevisionConsistencyResult(raw, fallbackDocument) {
   }
 }
 
-function getMissingSections(document) {
-  if (!document) return [...REQUIRED_SECTION_HEADINGS];
-  return REQUIRED_SECTION_HEADINGS.filter((heading) => !document.includes(heading));
+function createEmptySectionMap() {
+  const map = new Map();
+  for (const item of SECTION_DEFINITIONS) {
+    map.set(item.id, { id: item.id, title: item.title, content: '' });
+  }
+  return map;
+}
+
+function sectionMapToJson(sectionMap) {
+  return {
+    sections: SECTION_DEFINITIONS.map((item) => ({
+      id: item.id,
+      title: item.title,
+      content: sanitizeText(sectionMap.get(item.id)?.content || '', 200000),
+    })),
+  };
+}
+
+function parseSectionsJson(raw, { allowedIds = null, minChars = MIN_SECTION_CONTENT_CHARS_SEGMENT } = {}) {
+  const invalidSectionIds = new Set();
+  const qualityWarnings = [];
+  const sectionsById = new Map();
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  if (!text) {
+    return {
+      ok: false,
+      error: '输出为空',
+      sectionsById,
+      invalidSectionIds: [],
+      missingSectionIds: allowedIds ? [...allowedIds] : SECTION_DEFINITIONS.map((item) => item.id),
+      qualityWarnings,
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return {
+      ok: false,
+      error: 'JSON 解析失败',
+      sectionsById,
+      invalidSectionIds: [],
+      missingSectionIds: allowedIds ? [...allowedIds] : SECTION_DEFINITIONS.map((item) => item.id),
+      qualityWarnings: ['模型返回非 JSON，已触发该阶段重试'],
+    };
+  }
+
+  const list = Array.isArray(parsed?.sections) ? parsed.sections : null;
+  if (!list) {
+    return {
+      ok: false,
+      error: 'JSON 缺少 sections 数组',
+      sectionsById,
+      invalidSectionIds: [],
+      missingSectionIds: allowedIds ? [...allowedIds] : SECTION_DEFINITIONS.map((item) => item.id),
+      qualityWarnings: ['模型返回 JSON 结构不符合协议（缺少 sections）'],
+    };
+  }
+
+  for (const item of list) {
+    const id = Number(item?.id);
+    const title = sanitizeText(item?.title, 80);
+    const content = String(item?.content || '').trim();
+    if (!Number.isInteger(id) || !SECTION_TITLE_BY_ID.has(id)) {
+      if (Number.isInteger(id)) invalidSectionIds.add(id);
+      continue;
+    }
+    const expectedTitle = SECTION_TITLE_BY_ID.get(id);
+    if (!title || title !== expectedTitle) {
+      invalidSectionIds.add(id);
+      qualityWarnings.push(`章节 ${id} 标题不匹配，期望「${expectedTitle}」`);
+      continue;
+    }
+    if (allowedIds && !allowedIds.has(id)) {
+      invalidSectionIds.add(id);
+      qualityWarnings.push(`章节 ${id} 不在当前允许范围内`);
+      continue;
+    }
+    if (!content || content.length < minChars) {
+      invalidSectionIds.add(id);
+      qualityWarnings.push(`章节 ${id} 内容过短（<${minChars}字）`);
+      continue;
+    }
+    if (sectionsById.has(id)) {
+      qualityWarnings.push(`章节 ${id} 在 JSON 中重复，已采用最后一次输出`);
+    }
+    sectionsById.set(id, { id, title: expectedTitle, content });
+  }
+
+  const expectedIds = allowedIds ? [...allowedIds] : SECTION_DEFINITIONS.map((item) => item.id);
+  const missingSectionIds = expectedIds.filter((id) => !sectionsById.has(id));
+  return {
+    ok: missingSectionIds.length === 0 && invalidSectionIds.size === 0,
+    error: '',
+    sectionsById,
+    invalidSectionIds: [...invalidSectionIds].sort((a, b) => a - b),
+    missingSectionIds,
+    qualityWarnings,
+  };
+}
+
+function applySectionsToMap(sectionMap, sectionsById) {
+  for (const [id, section] of sectionsById.entries()) {
+    sectionMap.set(id, { id, title: section.title, content: section.content.trim() });
+  }
+}
+
+function renderSectionMapMarkdown(sectionMap) {
+  const chunks = [];
+  for (const item of SECTION_DEFINITIONS) {
+    const content = String(sectionMap.get(item.id)?.content || '').trim();
+    if (!content) continue;
+    chunks.push(`## ${item.id}. ${item.title}\n${content}`);
+  }
+  return chunks.join('\n\n').trim();
+}
+
+function buildShingles(text) {
+  const normalized = String(text || '').replace(/\s+/g, '').toLowerCase();
+  if (!normalized) return new Set();
+  const grams = new Set();
+  for (let i = 0; i < normalized.length - 1; i += 1) {
+    grams.add(normalized.slice(i, i + 2));
+  }
+  return grams.size > 0 ? grams : new Set([normalized]);
+}
+
+function textSimilarity(a, b) {
+  const sa = buildShingles(a);
+  const sb = buildShingles(b);
+  if (sa.size === 0 || sb.size === 0) return 0;
+  let inter = 0;
+  for (const token of sa) {
+    if (sb.has(token)) inter += 1;
+  }
+  return inter / (sa.size + sb.size - inter);
+}
+
+function hasBalancedPairs(text) {
+  const pairs = [
+    ['(', ')'],
+    ['（', '）'],
+    ['[', ']'],
+    ['{', '}'],
+    ['“', '”'],
+    ['‘', '’'],
+  ];
+  for (const [left, right] of pairs) {
+    let count = 0;
+    for (const ch of String(text || '')) {
+      if (ch === left) count += 1;
+      if (ch === right) count -= 1;
+      if (count < 0) return false;
+    }
+    if (count !== 0) return false;
+  }
+  return true;
 }
 
 function hasStructuralGap(document) {
   if (!document) return true;
-  const trimmed = document.trim();
+  const trimmed = String(document).trim();
   if (!trimmed) return true;
   const tail = trimmed.slice(-220);
-  if (/[，、：\-（(]$/.test(trimmed)) return true;
+  if (/[，、：\-（([“‘"]$/.test(trimmed)) return true;
   if (/#{1,6}\s*[^\n]*$/.test(tail)) return true;
   if (/\|\s*[-:]+\s*\|?$/.test(tail)) return true;
-  if (/功能实现目标|功能详细描述|用户目标|系统行为|商业化路径\s*$/.test(tail)) return true;
-  return false;
+  if (!/[。！？.!?）\]」』”’]$/.test(trimmed)) return true;
+  return !hasBalancedPairs(trimmed);
 }
 
-function validateDocumentCompleteness(document) {
-  const missingSections = getMissingSections(document);
-  const structureGap = hasStructuralGap(document);
+function evaluateSectionMapQuality(sectionMap, glossary = []) {
+  const missingSectionIds = [];
+  const invalidSectionIds = [];
+  const qualityWarnings = [];
+  const sections = [];
+  for (const item of SECTION_DEFINITIONS) {
+    const content = String(sectionMap.get(item.id)?.content || '').trim();
+    sections.push({ id: item.id, title: item.title, content });
+    if (!content) {
+      missingSectionIds.push(item.id);
+      continue;
+    }
+    if (content.length < MIN_SECTION_CONTENT_CHARS) {
+      invalidSectionIds.push(item.id);
+      qualityWarnings.push(`章节 ${item.id}「${item.title}」信息密度不足（<${MIN_SECTION_CONTENT_CHARS}字）`);
+    }
+  }
+
+  for (let i = 0; i < sections.length; i += 1) {
+    for (let j = i + 1; j < sections.length; j += 1) {
+      const a = sections[i];
+      const b = sections[j];
+      if (!a.content || !b.content) continue;
+      const sim = textSimilarity(a.content.slice(0, 600), b.content.slice(0, 600));
+      if (sim >= 0.86) {
+        qualityWarnings.push(`章节 ${a.id} 与章节 ${b.id} 内容重复度偏高（${Math.round(sim * 100)}%）`);
+      }
+    }
+  }
+
+  const fullDoc = renderSectionMapMarkdown(sectionMap);
+  const lowerDoc = fullDoc.toLowerCase();
+  const glossaryList = Array.isArray(glossary) ? glossary : [];
+  for (const item of glossaryList) {
+    const term = sanitizeText(item?.term, 80);
+    const aliases = Array.isArray(item?.aliases) ? item.aliases.map((a) => sanitizeText(a, 80)).filter(Boolean) : [];
+    if (!term || aliases.length === 0) continue;
+    const hasTerm = lowerDoc.includes(term.toLowerCase());
+    const hasAlias = aliases.some((alias) => lowerDoc.includes(alias.toLowerCase()));
+    if (hasAlias && !hasTerm) {
+      qualityWarnings.push(`术语一致性提示：出现别名但未使用主术语「${term}」`);
+    }
+  }
+
+  const hasGap = hasStructuralGap(fullDoc);
+  if (hasGap) qualityWarnings.push('文档尾部闭合校验未通过（可能存在半句或括号未闭合）');
+
+  const presentCount = 9 - missingSectionIds.length;
+  const validCount = 9 - new Set(invalidSectionIds).size;
+  let completionScore = Math.round((presentCount / 9) * 70 + (validCount / 9) * 30);
+  if (hasGap) completionScore = Math.max(0, completionScore - 10);
+
   return {
-    missingSections,
-    hasStructuralGap: structureGap,
-    incomplete: missingSections.length > 0 || structureGap,
+    missingSectionIds,
+    invalidSectionIds: [...new Set(invalidSectionIds)].sort((a, b) => a - b),
+    missingSections: missingSectionIds.map((id) => SECTION_TITLE_BY_ID.get(id)).filter(Boolean),
+    qualityWarnings,
+    completionScore,
+    hasStructuralGap: hasGap,
+    incomplete: missingSectionIds.length > 0 || invalidSectionIds.length > 0 || hasGap,
   };
+}
+
+function parseMarkdownToSectionMap(document) {
+  const map = createEmptySectionMap();
+  const text = String(document || '').trim();
+  if (!text) return map;
+  const matcher = /^##\s*(\d+)\.\s*([^\n]+)\n([\s\S]*?)(?=^##\s*\d+\.\s*[^\n]+\n|$)/gm;
+  let found = null;
+  while ((found = matcher.exec(text)) !== null) {
+    const id = Number(found[1]);
+    const title = sanitizeText(found[2], 80);
+    const content = String(found[3] || '').trim();
+    if (!Number.isInteger(id) || !SECTION_TITLE_BY_ID.has(id)) continue;
+    if (title !== SECTION_TITLE_BY_ID.get(id)) continue;
+    if (!content) continue;
+    map.set(id, { id, title, content });
+  }
+  return map;
+}
+
+function getMissingSections(document) {
+  const quality = evaluateSectionMapQuality(parseMarkdownToSectionMap(document));
+  return quality.missingSections;
+}
+
+function validateDocumentCompleteness(document, glossary = []) {
+  return evaluateSectionMapQuality(parseMarkdownToSectionMap(document), glossary);
 }
 
 function extractKeywords(text) {
@@ -1181,20 +1418,20 @@ function normalizePrimarySectionNumbers(document) {
 const SECTION_SEGMENTS = [
   {
     label: '1-3',
-    headings: REQUIRED_SECTION_HEADINGS.slice(0, 3),
-    stage: 'running_draft',
+    sectionDefs: SECTION_DEFINITIONS.slice(0, 3),
+    stage: 'running_segment_1_3',
     progress: 45,
   },
   {
     label: '4-6',
-    headings: REQUIRED_SECTION_HEADINGS.slice(3, 6),
-    stage: 'running_complete',
+    sectionDefs: SECTION_DEFINITIONS.slice(3, 6),
+    stage: 'running_segment_4_6',
     progress: 62,
   },
   {
     label: '7-9',
-    headings: REQUIRED_SECTION_HEADINGS.slice(6, 9),
-    stage: 'running_complete',
+    sectionDefs: SECTION_DEFINITIONS.slice(6, 9),
+    stage: 'running_segment_7_9',
     progress: 78,
   },
 ];
@@ -1441,6 +1678,11 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
   );
 
   let doc = typeof job.latestDocumentSnapshot === 'string' ? job.latestDocumentSnapshot : '';
+  let sectionMap = doc.trim() ? parseMarkdownToSectionMap(doc) : createEmptySectionMap();
+  const syncDocFromMap = () => {
+    doc = renderSectionMapMarkdown(sectionMap);
+    return doc;
+  };
   let reasoning = typeof job.reasoning === 'string' ? job.reasoning : '';
   let anchors = {
     outline: REQUIRED_SECTION_HEADINGS.map((section) => ({ section, intent: '', mustInclude: [] })),
@@ -1510,6 +1752,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
       });
     }
 
+    sectionMap = createEmptySectionMap();
     doc = '';
     for (const segment of SECTION_SEGMENTS) {
       const segmentDoc = await runStageWithRetries(
@@ -1526,7 +1769,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
                   clarificationAnswers: answers,
                   existingDocument: doc,
                   segmentLabel: segment.label,
-                  allowedSections: segment.headings,
+                  allowedSections: segment.sectionDefs,
                   outline: anchors.outline,
                   glossary: anchors.glossary,
                 }),
@@ -1548,9 +1791,22 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
               },
             }
           );
-          const merged = mergeSegmentDocument(doc, typeof segmentRaw === 'string' ? segmentRaw : '', segment.headings);
-          if (!merged.trim()) throw new Error(`分段 ${segment.label} 生成为空`);
-          return merged;
+          const parsed = parseSectionsJson(segmentRaw, {
+            allowedIds: new Set(segment.sectionDefs.map((item) => item.id)),
+            minChars: MIN_SECTION_CONTENT_CHARS_SEGMENT,
+          });
+          if (!parsed.ok) {
+            const details = [
+              parsed.error || '协议校验失败',
+              parsed.missingSectionIds.length ? `缺失章节ID: ${parsed.missingSectionIds.join(',')}` : '',
+              parsed.invalidSectionIds.length ? `非法章节ID: ${parsed.invalidSectionIds.join(',')}` : '',
+            ]
+              .filter(Boolean)
+              .join('；');
+            throw new Error(`分段 ${segment.label} 输出不合法：${details}`);
+          }
+          applySectionsToMap(sectionMap, parsed.sectionsById);
+          return syncDocFromMap();
         },
         GENERATE_STAGE_MAX_ATTEMPTS,
         (attempt) => onProgress(segment.progress, `正在生成章节 ${segment.label}（${attempt}/${GENERATE_STAGE_MAX_ATTEMPTS}）`, {
@@ -1583,7 +1839,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
         }
         throw error;
       });
-      doc = normalizePrimarySectionNumbers(segmentDoc);
+      doc = syncDocFromMap();
       onProgress(Math.min(segment.progress + 8, 86), `章节 ${segment.label} 已完成`, {
         stage: segment.stage,
         outputLevel: 'draft',
@@ -1610,20 +1866,25 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
   const runTargetedCompletion = async (reasonLabel) => {
     const completedDoc = await runStageWithRetries(
       async () => {
-        const current = validateDocumentCompleteness(doc);
-        const continuation = await requestLLMWithBudgetAndFallback(
+        const current = evaluateSectionMapQuality(sectionMap, anchors.glossary);
+        if (current.missingSectionIds.length === 0) return syncDocFromMap();
+        const missingDefs = SECTION_DEFINITIONS.filter((item) => current.missingSectionIds.includes(item.id));
+        const completionRaw = await requestLLMWithBudgetAndFallback(
           [
-            { role: 'system', content: CONTINUE_SYSTEM },
+            { role: 'system', content: SEGMENT_GENERATE_SYSTEM },
             {
               role: 'user',
-              content: buildContinueUser(
-                userRequirement,
-                doc,
-                reasoning,
-                answers,
+              content: buildSegmentGenerateUser({
+                requirement: userRequirement,
                 scenario,
-                current.missingSections
-              ),
+                reasoning,
+                clarificationAnswers: answers,
+                existingDocument: doc,
+                segmentLabel: `${reasonLabel}-缺章补齐`,
+                allowedSections: missingDefs,
+                outline: anchors.outline,
+                glossary: anchors.glossary,
+              }),
             },
           ],
           {
@@ -1642,9 +1903,22 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
             },
           }
         );
-        const merged = mergeContinuation(doc, typeof continuation === 'string' ? continuation : '');
-        if (!merged.trim()) throw new Error('补齐后文档为空');
-        return merged;
+        const parsed = parseSectionsJson(completionRaw, {
+          allowedIds: new Set(current.missingSectionIds),
+          minChars: MIN_SECTION_CONTENT_CHARS_SEGMENT,
+        });
+        if (!parsed.ok) {
+          const details = [
+            parsed.error || '协议校验失败',
+            parsed.missingSectionIds.length ? `缺失章节ID: ${parsed.missingSectionIds.join(',')}` : '',
+            parsed.invalidSectionIds.length ? `非法章节ID: ${parsed.invalidSectionIds.join(',')}` : '',
+          ]
+            .filter(Boolean)
+            .join('；');
+          throw new Error(`缺章补齐输出不合法：${details}`);
+        }
+        applySectionsToMap(sectionMap, parsed.sectionsById);
+        return syncDocFromMap();
       },
       GENERATE_STAGE_MAX_ATTEMPTS,
       (attempt) => onProgress(84, `正在定向补齐缺失章节（${attempt}/${GENERATE_STAGE_MAX_ATTEMPTS}）`, {
@@ -1670,26 +1944,27 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
         outputLevel: 'partial',
         document: doc,
         latestDocumentSnapshot: doc,
-        missingSections: validateDocumentCompleteness(doc).missingSections,
+        missingSections: evaluateSectionMapQuality(sectionMap, anchors.glossary).missingSections,
         lastError: error?.message || String(error),
       });
       return doc;
     });
-    doc = normalizePrimarySectionNumbers(completedDoc);
+    doc = completedDoc;
   };
 
-  const initialCheck = validateDocumentCompleteness(doc);
+  const initialCheck = evaluateSectionMapQuality(sectionMap, anchors.glossary);
   if (completeForced || initialCheck.incomplete) {
     await runTargetedCompletion('缺失章节');
   }
 
-  if (doc.trim() && (!completeForced || consistencyForced || validateDocumentCompleteness(doc).incomplete || validateDocumentCompleteness(doc).hasStructuralGap)) {
+  if (doc.trim() && (!completeForced || consistencyForced || evaluateSectionMapQuality(sectionMap, anchors.glossary).incomplete)) {
     doc = await runStageWithRetries(
       async () => {
+        const currentState = sectionMapToJson(sectionMap);
         const repaired = await requestLLMWithBudgetAndFallback(
           [
             { role: 'system', content: CONSISTENCY_REPAIR_SYSTEM },
-            { role: 'user', content: buildConsistencyRepairUser(doc, anchors.outline, anchors.glossary) },
+            { role: 'user', content: buildConsistencyRepairUser(currentState, anchors.outline, anchors.glossary) },
           ],
           {
             model: MODEL_V3,
@@ -1704,13 +1979,19 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
             maxFallbackAttempts: MAX_FALLBACK_ATTEMPTS_PER_JOB,
           }
         );
-        const text = normalizePrimarySectionNumbers(typeof repaired === 'string' ? repaired : '');
-        if (!text.trim()) throw new Error('统一性修复结果为空');
-        return text;
+        const parsed = parseSectionsJson(repaired, {
+          allowedIds: new Set(SECTION_DEFINITIONS.map((item) => item.id)),
+          minChars: MIN_SECTION_CONTENT_CHARS_SEGMENT,
+        });
+        if (!parsed.ok) {
+          throw new Error('统一性修复结果违反结构约束（仅允许改写 content）');
+        }
+        applySectionsToMap(sectionMap, parsed.sectionsById);
+        return syncDocFromMap();
       },
       1,
       () => onProgress(90, '正在做统一性修复', {
-        stage: 'running_consistency',
+        stage: 'running_consistency_json',
         outputLevel: 'draft',
         document: doc,
         latestDocumentSnapshot: doc,
@@ -1719,7 +2000,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
       })
     ).catch((error) => {
       onProgress(92, `统一性修复跳过：${error?.message || error}`, {
-        stage: 'running_consistency',
+        stage: 'running_consistency_json',
         outputLevel: 'partial',
         document: doc,
         latestDocumentSnapshot: doc,
@@ -1729,15 +2010,13 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     });
   }
 
-  doc = normalizePrimarySectionNumbers(doc);
-
-  const repairCheck = validateDocumentCompleteness(doc);
+  const repairCheck = evaluateSectionMapQuality(sectionMap, anchors.glossary);
   if (repairCheck.incomplete && doc.trim()) {
     await runTargetedCompletion('统一性修复后');
-    doc = normalizePrimarySectionNumbers(doc);
   }
 
-  const finalCheck = validateDocumentCompleteness(doc);
+  doc = syncDocFromMap();
+  const finalCheck = evaluateSectionMapQuality(sectionMap, anchors.glossary);
   const isFinal = !finalCheck.incomplete;
   onProgress(98, isFinal ? '最终稿已完成' : '生成了可用稿，部分章节待补齐', {
     stage: isFinal ? 'completed_final' : 'completed_partial',
@@ -1747,6 +2026,10 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     document: doc,
     latestDocumentSnapshot: doc,
     missingSections: finalCheck.missingSections,
+    missingSectionIds: finalCheck.missingSectionIds,
+    invalidSectionIds: finalCheck.invalidSectionIds,
+    completionScore: finalCheck.completionScore,
+    qualityWarnings: finalCheck.qualityWarnings,
     fallbackAttempts: fallbackState.attempts,
     attempt: job.attempt || 0,
     maxAttempts: job.maxAttempts || GENERATE_STAGE_MAX_ATTEMPTS,
@@ -1755,6 +2038,10 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     document: doc,
     fallbackAttempts: fallbackState.attempts,
     missingSections: finalCheck.missingSections,
+    missingSectionIds: finalCheck.missingSectionIds,
+    invalidSectionIds: finalCheck.invalidSectionIds,
+    completionScore: finalCheck.completionScore,
+    qualityWarnings: finalCheck.qualityWarnings,
     outputLevel: isFinal ? 'final' : 'partial',
     lifecycle: isFinal ? 'completed_final' : 'completed_partial',
     lastError: finalCheck.incomplete ? '仍有缺失章节，已返回可用稿' : '',
@@ -1787,6 +2074,10 @@ function enqueueGenerationJob(payload) {
     remainingMs: GEN_TOTAL_BUDGET_MS,
     fallbackAttempts: 0,
     missingSections: [],
+    missingSectionIds: SECTION_DEFINITIONS.map((item) => item.id),
+    invalidSectionIds: [],
+    completionScore: 0,
+    qualityWarnings: [],
     attempt: 0,
     maxAttempts: GENERATE_STAGE_MAX_ATTEMPTS,
     forcedStage: '',
@@ -1846,6 +2137,10 @@ async function processGenerationQueue() {
           latestDocumentSnapshot: result.document,
           fallbackAttempts: result.fallbackAttempts,
           missingSections: result.missingSections,
+          missingSectionIds: result.missingSectionIds || [],
+          invalidSectionIds: result.invalidSectionIds || [],
+          completionScore: Number.isFinite(result.completionScore) ? result.completionScore : 0,
+          qualityWarnings: Array.isArray(result.qualityWarnings) ? result.qualityWarnings : [],
           lastError: result.lastError || '',
           reasoning: result.reasoning || '',
           forcedStage: '',
@@ -1868,6 +2163,10 @@ async function processGenerationQueue() {
           latestDocumentSnapshot: snapshot || '',
           fallbackAttempts: current?.fallbackAttempts || 0,
           missingSections: current?.missingSections || [],
+          missingSectionIds: current?.missingSectionIds || [],
+          invalidSectionIds: current?.invalidSectionIds || [],
+          completionScore: Number.isFinite(current?.completionScore) ? current.completionScore : 0,
+          qualityWarnings: Array.isArray(current?.qualityWarnings) ? current.qualityWarnings : [],
           lastError: message,
           forcedStage: '',
         });
@@ -2520,6 +2819,10 @@ app.post('/api/document/generate', attachOptionalAuth, attachPlanInfo, asyncRout
     document: job.latestDocumentSnapshot || '',
     fallbackAttempts: job.fallbackAttempts,
     missingSections: job.missingSections,
+    missingSectionIds: job.missingSectionIds || [],
+    invalidSectionIds: job.invalidSectionIds || [],
+    completionScore: Number.isFinite(job.completionScore) ? job.completionScore : 0,
+    qualityWarnings: Array.isArray(job.qualityWarnings) ? job.qualityWarnings : [],
     plan: planInfo.plan,
     quotaRemaining: userId ? getQuotaRemaining(userId) : planInfo.quotaRemaining,
     entitlements: planInfo.entitlements,
@@ -2560,6 +2863,10 @@ app.get('/api/document/generate/:jobId', attachOptionalAuth, attachPlanInfo, asy
     lastError: job.lastError || '',
     fallbackAttempts: job.fallbackAttempts,
     missingSections: job.missingSections,
+    missingSectionIds: job.missingSectionIds || [],
+    invalidSectionIds: job.invalidSectionIds || [],
+    completionScore: Number.isFinite(job.completionScore) ? job.completionScore : 0,
+    qualityWarnings: Array.isArray(job.qualityWarnings) ? job.qualityWarnings : [],
     document: job.latestDocumentSnapshot || job.document || '',
     plan: planInfo.plan,
     quotaRemaining: req.authUser?.id ? getQuotaRemaining(req.authUser.id) : planInfo.quotaRemaining,
@@ -2600,7 +2907,15 @@ app.post('/api/document/generate/:jobId/retry-stage', attachOptionalAuth, attach
 
   const nextStage =
     requestedStage ||
-    (job.stage === 'running_complete' || job.stage === 'completed_partial' ? 'complete' : 'draft');
+    (
+      job.stage === 'running_complete' ||
+      job.stage === 'running_segment_4_6' ||
+      job.stage === 'running_segment_7_9' ||
+      job.stage === 'running_consistency_json' ||
+      job.stage === 'completed_partial'
+        ? 'complete'
+        : 'draft'
+    );
   const now = Date.now();
   updateGenerationJob(jobId, {
     status: 'queued',
