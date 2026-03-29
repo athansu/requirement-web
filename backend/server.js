@@ -60,6 +60,17 @@ const SECTION_DEFINITIONS = REQUIRED_SECTION_HEADINGS.map((title, index) => ({ i
 const SECTION_TITLE_BY_ID = new Map(SECTION_DEFINITIONS.map((item) => [item.id, item.title]));
 const MIN_SECTION_CONTENT_CHARS = Math.max(Number(process.env.MIN_SECTION_CONTENT_CHARS) || 120, 40);
 const MIN_SECTION_CONTENT_CHARS_SEGMENT = Math.max(Number(process.env.MIN_SECTION_CONTENT_CHARS_SEGMENT) || 40, 20);
+const SECTION_QUALITY_SIGNALS = {
+  1: { minHits: 2, terms: ['核心价值', '目标用户', '差异化', '定位', '场景'] },
+  2: { minHits: 2, terms: ['用户', '画像', '场景', '痛点', '行为'] },
+  3: { minHits: 2, terms: ['旅程', '触发', '路径', '步骤', '决策', '情绪'] },
+  4: { minHits: 2, terms: ['功能', '模块', 'mvp', '优先级', '列表'] },
+  5: { minHits: 2, terms: ['输入', '输出', '系统', '交互', '规则', '流程'] },
+  6: { minHits: 2, terms: ['性能', '兼容', '稳定', '安全', '可维护'] },
+  7: { minHits: 2, terms: ['架构', '模块', '服务', '数据', '部署', '技术栈'] },
+  8: { minHits: 1, terms: ['AI', '模型', '推荐', '生成', '自动化', '能力'] },
+  9: { minHits: 2, terms: ['商业化', '变现', '订阅', '广告', '收入', '指标'] },
+};
 const GEN_TOTAL_BUDGET_MS = Math.max(Number(process.env.GEN_TOTAL_BUDGET_MS) || 480000, 60000);
 const REASON_MAX_MS = Math.max(Number(process.env.REASON_MAX_MS) || 90000, 5000);
 const GENERATE_MAX_MS = Math.max(Number(process.env.GENERATE_MAX_MS) || 180000, 5000);
@@ -1185,6 +1196,19 @@ function evaluateSectionMapQuality(sectionMap, glossary = []) {
       invalidSectionIds.push(item.id);
       qualityWarnings.push(`章节 ${item.id}「${item.title}」信息密度不足（<${MIN_SECTION_CONTENT_CHARS}字）`);
     }
+    const signalRule = SECTION_QUALITY_SIGNALS[item.id];
+    if (signalRule) {
+      const lower = content.toLowerCase();
+      const hitCount = signalRule.terms.reduce((acc, term) => (
+        lower.includes(String(term).toLowerCase()) ? acc + 1 : acc
+      ), 0);
+      if (hitCount < signalRule.minHits) {
+        invalidSectionIds.push(item.id);
+        qualityWarnings.push(
+          `章节 ${item.id}「${item.title}」关键信息不足（命中 ${hitCount}/${signalRule.minHits}）`
+        );
+      }
+    }
   }
 
   for (let i = 0; i < sections.length; i += 1) {
@@ -1867,8 +1891,9 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     const completedDoc = await runStageWithRetries(
       async () => {
         const current = evaluateSectionMapQuality(sectionMap, anchors.glossary);
-        if (current.missingSectionIds.length === 0) return syncDocFromMap();
-        const missingDefs = SECTION_DEFINITIONS.filter((item) => current.missingSectionIds.includes(item.id));
+        const targetIds = [...new Set([...current.missingSectionIds, ...current.invalidSectionIds])];
+        if (targetIds.length === 0) return syncDocFromMap();
+        const missingDefs = SECTION_DEFINITIONS.filter((item) => targetIds.includes(item.id));
         const completionRaw = await requestLLMWithBudgetAndFallback(
           [
             { role: 'system', content: SEGMENT_GENERATE_SYSTEM },
@@ -1880,7 +1905,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
                 reasoning,
                 clarificationAnswers: answers,
                 existingDocument: doc,
-                segmentLabel: `${reasonLabel}-缺章补齐`,
+                segmentLabel: `${reasonLabel}-缺章与弱章补强`,
                 allowedSections: missingDefs,
                 outline: anchors.outline,
                 glossary: anchors.glossary,
@@ -1904,7 +1929,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
           }
         );
         const parsed = parseSectionsJson(completionRaw, {
-          allowedIds: new Set(current.missingSectionIds),
+          allowedIds: new Set(targetIds),
           minChars: MIN_SECTION_CONTENT_CHARS_SEGMENT,
         });
         if (!parsed.ok) {
@@ -1915,13 +1940,13 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
           ]
             .filter(Boolean)
             .join('；');
-          throw new Error(`缺章补齐输出不合法：${details}`);
+          throw new Error(`补强输出不合法：${details}`);
         }
         applySectionsToMap(sectionMap, parsed.sectionsById);
         return syncDocFromMap();
       },
       GENERATE_STAGE_MAX_ATTEMPTS,
-      (attempt) => onProgress(84, `正在定向补齐缺失章节（${attempt}/${GENERATE_STAGE_MAX_ATTEMPTS}）`, {
+      (attempt) => onProgress(84, `正在定向补齐与补强章节（${attempt}/${GENERATE_STAGE_MAX_ATTEMPTS}）`, {
         stage: 'running_complete',
         outputLevel: 'draft',
         document: doc,
@@ -1931,7 +1956,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
         attempt,
         maxAttempts: GENERATE_STAGE_MAX_ATTEMPTS,
       }),
-      (err) => onProgress(84, `定向补齐重试中：${err?.message || err}`, {
+      (err) => onProgress(84, `定向补齐/补强重试中：${err?.message || err}`, {
         stage: 'running_complete',
         outputLevel: 'draft',
         document: doc,

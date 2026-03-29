@@ -176,7 +176,12 @@ export const SEGMENT_GENERATE_SYSTEM = `${PERSONA}
 {"sections":[{"id":1,"title":"产品定位","content":"..."}]}
 - 只允许输出本次指定的章节 id，禁止输出范围外 id。
 - title 必须与章节白名单完全一致，禁止改名。
-- content 必须是完整自然语言段落，不要半句收尾。`;
+- content 必须是完整自然语言段落，不要半句收尾。
+
+质量要求：
+- 每章至少覆盖 2 个与本章相关的关键信息点（例如：目标用户/场景/痛点/流程/指标/约束/商业化）。
+- 优先写“可执行信息”，避免空泛表述与口号化语言。
+- 在不新增章节的前提下，保证内容具体、可落地。`;
 
 export function buildSegmentGenerateUser(params) {
   const {
@@ -222,6 +227,7 @@ export const CONSISTENCY_REPAIR_SYSTEM = `${PERSONA}
 - 术语统一
 - 前后口径冲突修复
 - 删除重复段落
+- 在同一章节内补足缺失的关键细节（不改结构）
 
 禁止：
 - 新增产品范围
