@@ -205,7 +205,7 @@ export interface GenerateJobCreateRes {
   success: boolean;
   jobId?: string;
   status?: 'queued' | 'running' | 'completed' | 'failed';
-  lifecycle?: 'queued' | 'running_draft' | 'running_segment_1_3' | 'running_segment_4_6' | 'running_segment_7_9' | 'running_complete' | 'running_consistency' | 'running_consistency_json' | 'completed_final' | 'completed_partial' | 'failed_fatal';
+  lifecycle?: 'queued' | 'running_generate_main' | 'running_refine' | 'completed_final' | 'completed_partial' | 'failed_fatal';
   stage?: string;
   outputLevel?: 'draft' | 'partial' | 'final';
   progress?: number;
@@ -220,6 +220,7 @@ export interface GenerateJobCreateRes {
   fallbackAttempts?: number;
   missingSections?: string[];
   missingSectionIds?: number[];
+  weakSectionIds?: number[];
   invalidSectionIds?: number[];
   completionScore?: number;
   qualityWarnings?: string[];
@@ -243,7 +244,7 @@ export interface GenerateJobStatusRes {
   success: boolean;
   jobId?: string;
   status?: 'queued' | 'running' | 'completed' | 'failed';
-  lifecycle?: 'queued' | 'running_draft' | 'running_segment_1_3' | 'running_segment_4_6' | 'running_segment_7_9' | 'running_complete' | 'running_consistency' | 'running_consistency_json' | 'completed_final' | 'completed_partial' | 'failed_fatal';
+  lifecycle?: 'queued' | 'running_generate_main' | 'running_refine' | 'completed_final' | 'completed_partial' | 'failed_fatal';
   stage?: string;
   outputLevel?: 'draft' | 'partial' | 'final';
   progress?: number;
@@ -258,6 +259,7 @@ export interface GenerateJobStatusRes {
   fallbackAttempts?: number;
   missingSections?: string[];
   missingSectionIds?: number[];
+  weakSectionIds?: number[];
   invalidSectionIds?: number[];
   completionScore?: number;
   qualityWarnings?: string[];
@@ -283,7 +285,7 @@ export interface GenerateJobActionRes {
   jobId?: string;
   status?: 'queued' | 'running' | 'completed' | 'failed';
   stage?: string;
-  forcedStage?: 'draft' | 'complete' | 'consistency';
+  forcedStage?: 'draft' | 'complete' | 'consistency' | 'refine';
   message?: string;
   plan?: string;
   quotaRemaining?: {

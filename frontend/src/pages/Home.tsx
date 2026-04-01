@@ -5,7 +5,6 @@ import {
   generateDocument,
   getGenerateJobStatus,
   retryGenerateJobStage,
-  continueGenerateJob,
 } from '../services/api';
 
 const FALLBACK_QUESTIONS = [
@@ -78,13 +77,8 @@ const HOME_STATE_TTL_MS = Math.max(Number(import.meta.env.VITE_HOME_STATE_TTL_MS
 
 function stageLabel(stage: string | undefined) {
   switch (stage) {
-    case 'running_draft': return '初稿生成';
-    case 'running_segment_1_3': return '章节 1-3 生成';
-    case 'running_segment_4_6': return '章节 4-6 生成';
-    case 'running_segment_7_9': return '章节 7-9 生成';
-    case 'running_complete': return '章节补齐';
-    case 'running_consistency': return '一致性整理';
-    case 'running_consistency_json': return '一致性修复';
+    case 'running_generate_main': return '主生成';
+    case 'running_refine': return '定向补强';
     case 'completed_final': return '最终完成';
     case 'completed_partial': return '可用初稿';
     case 'failed_fatal': return '任务失败';
@@ -104,7 +98,7 @@ function formatMs(ms: number) {
 
 function getPollDelay(status: string | undefined, stage: string | undefined) {
   if (status === 'queued') return POLL_INTERVAL_QUEUED_MS;
-  if (stage === 'running_complete' || stage === 'running_consistency' || stage === 'running_consistency_json') {
+  if (stage === 'running_refine') {
     return POLL_INTERVAL_FINALIZING_MS;
   }
   return POLL_INTERVAL_MS;
@@ -135,6 +129,7 @@ interface PersistedHomeState {
   missingSections: string[];
   missingSectionIds: number[];
   invalidSectionIds: number[];
+  weakSectionIds: number[];
   completionScore: number;
   qualityWarnings: string[];
 }
@@ -165,6 +160,7 @@ function readHomeState(): PersistedHomeState {
       missingSections: [],
       missingSectionIds: [],
       invalidSectionIds: [],
+      weakSectionIds: [],
       completionScore: 0,
       qualityWarnings: [],
     };
@@ -197,6 +193,7 @@ function readHomeState(): PersistedHomeState {
         missingSections: [],
         missingSectionIds: [],
         invalidSectionIds: [],
+        weakSectionIds: [],
         completionScore: 0,
         qualityWarnings: [],
       };
@@ -275,6 +272,11 @@ function readHomeState(): PersistedHomeState {
         : Array.isArray(parsed.invalidSectionIds)
         ? parsed.invalidSectionIds.filter((item): item is number => typeof item === 'number')
         : [],
+      weakSectionIds: shouldResetGenerating
+        ? []
+        : Array.isArray(parsed.weakSectionIds)
+        ? parsed.weakSectionIds.filter((item): item is number => typeof item === 'number')
+        : [],
       completionScore:
         shouldResetGenerating ? 0 : (typeof parsed.completionScore === 'number' ? parsed.completionScore : 0),
       qualityWarnings: shouldResetGenerating
@@ -308,6 +310,7 @@ function readHomeState(): PersistedHomeState {
       missingSections: [],
       missingSectionIds: [],
       invalidSectionIds: [],
+      weakSectionIds: [],
       completionScore: 0,
       qualityWarnings: [],
     };
@@ -343,15 +346,10 @@ export function Home({ onGenerate }: HomeProps) {
   const [missingSections, setMissingSections] = useState<string[]>(initialState.missingSections);
   const [missingSectionIds, setMissingSectionIds] = useState<number[]>(initialState.missingSectionIds);
   const [invalidSectionIds, setInvalidSectionIds] = useState<number[]>(initialState.invalidSectionIds);
+  const [weakSectionIds, setWeakSectionIds] = useState<number[]>(initialState.weakSectionIds);
   const [completionScore, setCompletionScore] = useState(initialState.completionScore);
   const [qualityWarnings, setQualityWarnings] = useState<string[]>(initialState.qualityWarnings);
-
   const requirement = input.trim();
-  const canContinueFill =
-    Boolean(activeJobId)
-    && Boolean(draftDocument.trim())
-    && !loading
-    && (generateLifecycle === 'completed_partial' || generateLifecycle === 'failed_fatal');
 
   useEffect(() => {
     setDisplayRemainingMs(generateRemainingMs);
@@ -396,6 +394,7 @@ export function Home({ onGenerate }: HomeProps) {
         missingSections,
         missingSectionIds,
         invalidSectionIds,
+        weakSectionIds,
         completionScore,
         qualityWarnings,
       })
@@ -424,6 +423,7 @@ export function Home({ onGenerate }: HomeProps) {
     missingSections,
     missingSectionIds,
     invalidSectionIds,
+    weakSectionIds,
     completionScore,
     qualityWarnings,
   ]);
@@ -448,6 +448,7 @@ export function Home({ onGenerate }: HomeProps) {
     setMissingSections([]);
     setMissingSectionIds([]);
     setInvalidSectionIds([]);
+    setWeakSectionIds([]);
     setCompletionScore(0);
     setQualityWarnings([]);
     setLoading(false);
@@ -468,6 +469,7 @@ export function Home({ onGenerate }: HomeProps) {
     setCompletionScore(100);
     setMissingSectionIds([]);
     setInvalidSectionIds([]);
+    setWeakSectionIds([]);
     setQualityWarnings([]);
     setLoading(false);
     setStep('input');
@@ -494,7 +496,7 @@ export function Home({ onGenerate }: HomeProps) {
 
       const progress = Math.min(Math.max(statusRes.progress ?? 10, 10), 100);
       setGenerateProgress(progress);
-      setGenerateStage(statusRes.stage || 'running_draft');
+      setGenerateStage(statusRes.stage || 'running_generate_main');
       setGenerateLifecycle(statusRes.lifecycle || 'queued');
       setOutputLevel(statusRes.outputLevel === 'final' || statusRes.outputLevel === 'partial' ? statusRes.outputLevel : 'draft');
       setDraftDocument(typeof statusRes.document === 'string' ? statusRes.document : '');
@@ -509,6 +511,7 @@ export function Home({ onGenerate }: HomeProps) {
       setFallbackAttempts(statusRes.fallbackAttempts ?? 0);
       setMissingSections(statusRes.missingSections ?? []);
       setMissingSectionIds(statusRes.missingSectionIds ?? []);
+      setWeakSectionIds(statusRes.weakSectionIds ?? statusRes.invalidSectionIds ?? []);
       setInvalidSectionIds(statusRes.invalidSectionIds ?? []);
       setCompletionScore(statusRes.completionScore ?? 0);
       setQualityWarnings(statusRes.qualityWarnings ?? []);
@@ -529,7 +532,7 @@ export function Home({ onGenerate }: HomeProps) {
           return;
         }
         setLoading(false);
-        setGenerateStepText('已返回可用初稿，后台可继续补齐');
+        setGenerateStepText('已返回可用初稿，可先进入编辑');
         return;
       }
 
@@ -561,7 +564,7 @@ export function Home({ onGenerate }: HomeProps) {
     }
 
     if (latestDoc.trim()) {
-      setGenerateStepText('超时：已保留可用初稿，你可先编辑或稍后继续补齐');
+      setGenerateStepText('超时：已保留可用初稿，你可先进入编辑');
       setLoading(false);
       return;
     }
@@ -646,6 +649,7 @@ export function Home({ onGenerate }: HomeProps) {
       setFallbackAttempts(createRes.fallbackAttempts ?? 0);
       setMissingSections([]);
       setMissingSectionIds([]);
+      setWeakSectionIds([]);
       setInvalidSectionIds([]);
       setCompletionScore(0);
       setQualityWarnings([]);
@@ -831,38 +835,9 @@ export function Home({ onGenerate }: HomeProps) {
                     className="btn-primary"
                     onClick={() => onGenerate(requirement, draftDocument)}
                   >
-                    先进入文档编辑
+                    进入编辑
                   </button>
                 )}
-                {canContinueFill && (
-                  <button
-                    className="btn-secondary"
-                    onClick={async () => {
-                      try {
-                        if (!activeJobId) return;
-                        setError('');
-                        await continueGenerateJob(activeJobId);
-                        setLoading(true);
-                        await pollGenerateJob(activeJobId);
-                      } catch (e) {
-                        setError(e instanceof Error ? e.message : '继续补齐失败');
-                      }
-                    }}
-                  >
-                    继续补齐
-                  </button>
-                )}
-                <button
-                  className="btn-secondary"
-                  onClick={() => {
-                    pollingJobRef.current = '';
-                    setLoading(false);
-                    setStep('input');
-                    setError('');
-                  }}
-                >
-                  稍后继续
-                </button>
               </div>
             </>
           ) : (
@@ -884,8 +859,8 @@ export function Home({ onGenerate }: HomeProps) {
                 {missingSectionIds.length > 0 && (
                   <p>缺失章节ID：{missingSectionIds.join(', ')}</p>
                 )}
-                {invalidSectionIds.length > 0 && (
-                  <p>不达标章节ID：{invalidSectionIds.join(', ')}</p>
+                {weakSectionIds.length > 0 && (
+                  <p>薄弱章节ID：{weakSectionIds.join(', ')}</p>
                 )}
                 {qualityWarnings.length > 0 && (
                   <p>质量提示：{qualityWarnings.join('；')}</p>
@@ -914,25 +889,9 @@ export function Home({ onGenerate }: HomeProps) {
                     className="btn-secondary"
                     onClick={() => onGenerate(requirement, draftDocument)}
                   >
-                    先进入文档编辑
+                    进入编辑
                   </button>
                 )}
-                <button
-                  className="btn-secondary"
-                  onClick={() => {
-                    setError('');
-                    handleGenerate(true);
-                  }}
-                  disabled={loading}
-                >
-                  {loading ? '生成中…' : '重试'}
-                </button>
-                <button className="btn-secondary" onClick={() => { setError(''); setStep('clarify'); }}>
-                  返回澄清问题
-                </button>
-                <button className="btn-secondary" onClick={backToInput}>
-                  返回首页
-                </button>
               </div>
             </>
           )}

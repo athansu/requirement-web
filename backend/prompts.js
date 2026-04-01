@@ -92,6 +92,20 @@ ${NINE_SECTIONS}
 - 如需表格（例如功能列表），只在必要的小节中使用标准 Markdown 表格（表头、分隔行、数据行），表格前后留空行。
 - 不要将整段正文或表格放在代码块内。`;
 
+export const GENERATE_MAIN_SYSTEM = `${PERSONA}
+你的任务：根据用户需求、澄清回答和推理结论，一次性输出高质量、可执行的需求 Markdown 文档。
+
+输出目标：
+- 优先保证内容质量与可执行性（明确约束、流程、指标、边界）。
+- 目标覆盖 9 个章节（按顺序）：
+${NINE_SECTIONS}
+
+写作要求：
+- 每章提供 2-4 个关键点，避免空泛口号。
+- 面向实际落地：给出可执行约束、关键流程、可观测指标。
+- 不输出 HTML 标签，不输出代码块，不输出与文档无关说明。
+- Markdown 结构清晰，标题层级稳定。`;
+
 export function buildGenerateUser(requirement, reasoning, clarificationAnswers, scenario) {
   let block = `${buildScenarioBlock(scenario)}用户需求：\n${requirement}\n\n`;
   if (reasoning) block += `推理结论：\n${reasoning}\n\n`;
@@ -106,6 +120,20 @@ export function buildGenerateUser(requirement, reasoning, clarificationAnswers, 
   return block;
 }
 
+export function buildGenerateMainUser(requirement, reasoning, clarificationAnswers, scenario) {
+  let block = `${buildScenarioBlock(scenario)}用户需求：\n${requirement}\n\n`;
+  if (reasoning) block += `推理结论：\n${reasoning}\n\n`;
+  if (clarificationAnswers?.length) {
+    block += '澄清回答：\n';
+    clarificationAnswers.forEach(({ q, a }) => {
+      block += `- ${q}\n  ${a || '(未回答)'}\n`;
+    });
+    block += '\n';
+  }
+  block += '请一次性输出高质量需求 Markdown（仅文档正文，不要解释）：';
+  return block;
+}
+
 export const CONTINUE_SYSTEM = `${PERSONA}
 你的任务：补写一份尚未完成的 PRD 文档后半部分。
 要求：
@@ -114,6 +142,15 @@ export const CONTINUE_SYSTEM = `${PERSONA}
 - 如果已有文档已经写到某个小节中间，请从该位置自然续接。
 - 必须补齐缺失的 9 部分内容，尤其是后续尚未完成的小节。
 - 不要输出任何解释，只输出应补上的正文续写内容。`;
+
+export const REFINE_SYSTEM = `${PERSONA}
+你的任务：对现有需求 Markdown 做一次定向补强，仅处理“缺失章节”和“薄弱章节”。
+
+硬约束：
+- 仅补强指定章节，禁止全量重写。
+- 禁止新增章节标题、禁止删除已有章节标题、禁止改动章节编号顺序。
+- 每个目标章节补到“可执行”级别：至少 2 个关键点，避免空话。
+- 输出完整 Markdown 文档（不是片段），仅输出文档正文。`;
 
 export function buildContinueUser(
   requirement,
@@ -137,6 +174,39 @@ export function buildContinueUser(
   }
   block += `当前已生成但疑似未完成的 PRD 文档：\n\n${partialDocument}\n\n`;
   block += '请仅补写缺失章节，不要重复已有章节，不要输出任何解释：';
+  return block;
+}
+
+export function buildRefineUser(
+  requirement,
+  currentDocument,
+  reasoning,
+  clarificationAnswers,
+  scenario,
+  missingSections = [],
+  weakSections = [],
+  qualityWarnings = []
+) {
+  let block = `${buildScenarioBlock(scenario)}用户需求：\n${requirement}\n\n`;
+  if (reasoning) block += `推理结论：\n${reasoning}\n\n`;
+  if (clarificationAnswers?.length) {
+    block += '澄清回答：\n';
+    clarificationAnswers.forEach(({ q, a }) => {
+      block += `- ${q}\n  ${a || '(未回答)'}\n`;
+    });
+    block += '\n';
+  }
+  if (missingSections.length > 0) {
+    block += `缺失章节（优先补齐）：\n${missingSections.map((item) => `- ${item}`).join('\n')}\n\n`;
+  }
+  if (weakSections.length > 0) {
+    block += `薄弱章节（需增强可执行细节）：\n${weakSections.map((item) => `- ${item}`).join('\n')}\n\n`;
+  }
+  if (qualityWarnings.length > 0) {
+    block += `质量提示：\n${qualityWarnings.map((item) => `- ${item}`).join('\n')}\n\n`;
+  }
+  block += `当前文档：\n\n${currentDocument}\n\n`;
+  block += '请按约束输出补强后的完整 Markdown 文档（仅正文，不要解释）：';
   return block;
 }
 
@@ -208,7 +278,7 @@ export function buildSegmentGenerateUser(params) {
     block += `当前已完成文档（仅供上下文，不得重写）：\n\n${existingDocument}\n\n`;
   }
   block += `本次只允许生成章节：${segmentLabel}\n`;
-  block += `允许章节（id 与 title 必须完全一致）：\n${allowedSections.map((s) => `- id=${s.id}, title=${s.title}`).join('\n')}\n\n`;
+  block += `允许章节（id 与 title 必须完全一致）：\n${allowedSections.map((s) => `- id=${s.id}, title=${s.title}${s.requirement ? `, 写作要求：${s.requirement}` : ''}`).join('\n')}\n\n`;
   if (Array.isArray(outline) && outline.length > 0) {
     block += `结构锚点（必须遵循）：\n${JSON.stringify(outline, null, 2)}\n\n`;
   }
