@@ -47,14 +47,15 @@ export function parseClarifyResponse(text) {
     .split(/\n+/)
     .map((s) => s.replace(/^\s*[\d.)、]\s*/, '').trim())
     .filter((s) => s.length > 0);
-  return lines.slice(0, 5);
+  const unique = [...new Set(lines)];
+  return unique.slice(0, 5);
 }
 
-/** 若解析结果无效，返回默认 5 问 */
+/** 若解析结果无效，返回默认兜底问题 */
 export function ensureClarifyQuestions(parsed) {
-  if (Array.isArray(parsed) && parsed.length >= 5) {
-    const valid = parsed.filter((s) => typeof s === 'string' && s.trim());
-    if (valid.length >= 5) return valid.slice(0, 5);
+  if (Array.isArray(parsed) && parsed.length > 0) {
+    const valid = [...new Set(parsed.filter((s) => typeof s === 'string' && s.trim()).map((s) => s.trim()))];
+    if (valid.length >= 3) return valid.slice(0, 5);
   }
   return [...DEFAULT_CLARIFY_QUESTIONS];
 }

@@ -13,10 +13,10 @@ import {
   ensureClarifyQuestions,
   REASON_SYSTEM,
   buildReasonUser,
+  GENERATE_SYSTEM,
+  buildGenerateUser,
   GENERATE_MAIN_SYSTEM,
   buildGenerateMainUser,
-  REFINE_SYSTEM,
-  buildRefineUser,
   REVISE_APPLY_SYSTEM,
   buildReviseApplyUser,
   REVISE_CONSISTENCY_SYSTEM,
@@ -87,13 +87,14 @@ const REASON_MAX_MS = Math.max(Number(process.env.REASON_MAX_MS) || 90000, 5000)
 const GENERATE_MAX_MS = Math.max(Number(process.env.GENERATE_MAX_MS) || 180000, 5000);
 const CONTINUE_MAX_MS = Math.max(Number(process.env.CONTINUE_MAX_MS) || 90000, 5000);
 const DRAFT_MAX_MS = Math.max(Number(process.env.DRAFT_MAX_MS) || 120000, 5000);
-const GENERATE_STAGE_MAX_ATTEMPTS = Math.max(Number(process.env.GENERATE_STAGE_MAX_ATTEMPTS) || 2, 1);
+const GENERATE_TOTAL_ATTEMPTS = 3;
 const SAFETY_MARGIN_MS = Math.max(Number(process.env.SAFETY_MARGIN_MS) || 15000, 1000);
 const MAX_FALLBACK_ATTEMPTS_PER_JOB = Math.max(
   Number(process.env.MAX_FALLBACK_ATTEMPTS_PER_JOB) || 2,
   0
 );
 const MIN_STAGE_TIMEOUT_MS = 5000;
+const QUALITY_MIN_FINAL_CHARS = Math.max(Number(process.env.QUALITY_MIN_FINAL_CHARS) || 2200, 600);
 const REVISE_TOTAL_BUDGET_MS = Math.max(Number(process.env.REVISE_TOTAL_BUDGET_MS) || 180000, 60000);
 const REVISE_APPLY_MAX_MS = Math.max(Number(process.env.REVISE_APPLY_MAX_MS) || 120000, 10000);
 const REVISE_CONSISTENCY_MAX_MS = Math.max(Number(process.env.REVISE_CONSISTENCY_MAX_MS) || 70000, 5000);
@@ -1191,6 +1192,87 @@ function hasStructuralGap(document) {
   return !hasBalancedPairs(trimmed);
 }
 
+function extractSectionsFromMarkdownLoose(document) {
+  const text = String(document || '');
+  if (!text.trim()) return [];
+  const matched = [];
+  for (const item of SECTION_DEFINITIONS) {
+    const pattern = new RegExp(
+      `^\\s{0,3}##\\s*(?:\\d+[.)]?\\s*)?${escapeRegExp(item.title)}(?:[^\\n]*)$`,
+      'gm'
+    );
+    const result = pattern.exec(text);
+    if (!result) continue;
+    matched.push({
+      id: item.id,
+      title: item.title,
+      start: result.index,
+      headingEnd: result.index + result[0].length,
+    });
+  }
+  matched.sort((a, b) => a.start - b.start);
+  return matched.map((item, idx) => {
+    const next = matched[idx + 1];
+    const content = text.slice(item.headingEnd, next ? next.start : text.length).trim();
+    return {
+      id: item.id,
+      title: item.title,
+      content,
+    };
+  });
+}
+
+function evaluateDocumentQuality(document) {
+  const normalized = normalizePrimarySectionNumbers(String(document || '')).trim();
+  const sections = extractSectionsFromMarkdownLoose(normalized);
+  const presentIds = new Set(sections.map((item) => item.id));
+  const missingSectionIds = SECTION_DEFINITIONS
+    .filter((item) => !presentIds.has(item.id))
+    .map((item) => item.id);
+  const weakSectionIds = sections
+    .filter((item) => item.content.length > 0 && item.content.length < MIN_SECTION_CONTENT_CHARS)
+    .map((item) => item.id);
+  const hasGap = hasStructuralGap(normalized);
+  const qualityWarnings = [];
+  if (!normalized) qualityWarnings.push('文档为空');
+  if (normalized.length < QUALITY_MIN_FINAL_CHARS) {
+    qualityWarnings.push(`正文长度偏短（${normalized.length} 字，建议不少于 ${QUALITY_MIN_FINAL_CHARS} 字）`);
+  }
+  if (missingSectionIds.length > 0) {
+    qualityWarnings.push(`章节覆盖不足（缺失 ${missingSectionIds.length} 章）`);
+  }
+  if (hasGap) qualityWarnings.push('文档尾部闭合校验未通过（可能存在半句或括号未闭合）');
+  const uniqueWeak = [...new Set(weakSectionIds)].sort((a, b) => a - b);
+  if (uniqueWeak.length > 0) {
+    qualityWarnings.push(`部分章节信息密度偏低（ID: ${uniqueWeak.join(',')}）`);
+  }
+  const coverageCount = presentIds.size;
+  const coverageScore = Math.round((coverageCount / SECTION_DEFINITIONS.length) * 60);
+  const densityScore = Math.min(
+    30,
+    Math.round((Math.min(normalized.length, QUALITY_MIN_FINAL_CHARS * 1.5) / (QUALITY_MIN_FINAL_CHARS * 1.5)) * 30)
+  );
+  const closureScore = hasGap ? 0 : 10;
+  const completionScore = Math.max(0, Math.min(100, coverageScore + densityScore + closureScore));
+  const isFinalReady =
+    normalized.length >= QUALITY_MIN_FINAL_CHARS
+    && coverageCount >= 8
+    && !hasGap;
+  return {
+    document: normalized,
+    missingSectionIds,
+    weakSectionIds: uniqueWeak,
+    invalidSectionIds: uniqueWeak,
+    missingSections: missingSectionIds.map((id) => SECTION_TITLE_BY_ID.get(id)).filter(Boolean),
+    qualityWarnings,
+    completionScore,
+    coverageCount,
+    hasStructuralGap: hasGap,
+    isFinalReady,
+    incomplete: !isFinalReady,
+  };
+}
+
 function evaluateSectionMapQuality(sectionMap, glossary = []) {
   const missingSectionIds = [];
   const weakSectionIds = [];
@@ -1298,12 +1380,16 @@ function parseMarkdownToSectionMap(document) {
 }
 
 function getMissingSections(document) {
-  const quality = evaluateSectionMapQuality(parseMarkdownToSectionMap(document));
+  const quality = evaluateDocumentQuality(document);
   return quality.missingSections;
 }
 
 function validateDocumentCompleteness(document, glossary = []) {
-  return evaluateSectionMapQuality(parseMarkdownToSectionMap(document), glossary);
+  const quality = evaluateDocumentQuality(document);
+  if (Array.isArray(glossary) && glossary.length > 0 && quality.qualityWarnings.length === 0) {
+    return { ...quality, glossary };
+  }
+  return quality;
 }
 
 function extractKeywords(text) {
@@ -1541,6 +1627,12 @@ function isRetryableModelError(error) {
   );
 }
 
+function shouldRetryGenerateFailure(error) {
+  const code = sanitizeText(error?.code, 60).toLowerCase();
+  if (code === 'empty_output' || code === 'truncated_output') return true;
+  return isRetryableModelError(error);
+}
+
 function getStageTimeout(deadlineAt, stageMaxMs, stageLabel) {
   const remainingMs = Math.max(deadlineAt - Date.now(), 0);
   const usableBudget = remainingMs - SAFETY_MARGIN_MS;
@@ -1694,7 +1786,7 @@ async function runStageWithRetries(runOnce, maxAttempts, onAttempt, onError) {
 }
 
 async function generateDocumentFlow(job, onProgress = () => {}) {
-  const { payload, deadlineAt, forcedStage } = job;
+  const { payload, deadlineAt } = job;
   const { userRequirement, answers, scenario } = payload;
   const skipReasoning = process.env.FAST_GENERATE === '1' || process.env.FAST_GENERATE === 'true';
   const fallbackState = { attempts: Number(job.fallbackAttempts) || 0 };
@@ -1703,14 +1795,11 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     12288
   );
 
-  let doc = typeof job.latestDocumentSnapshot === 'string' ? job.latestDocumentSnapshot : '';
-  let sectionMap = doc.trim() ? parseMarkdownToSectionMap(doc) : createEmptySectionMap();
-  const syncDocFromMap = () => {
-    doc = renderSectionMapMarkdown(sectionMap);
-    return doc;
-  };
+  const existingSnapshot = typeof job.latestDocumentSnapshot === 'string' ? job.latestDocumentSnapshot.trim() : '';
+  let doc = existingSnapshot;
   let reasoning = typeof job.reasoning === 'string' ? job.reasoning : '';
-  const fallbackModel = MODEL_V3_FALLBACK || MODEL_R1;
+  const primaryModel = MODEL_R1 || 'deepseek-reasoner';
+  const backupModel = (MODEL_R1_FALLBACK || MODEL_V3 || 'deepseek-chat').trim();
 
   if (!reasoning && answers.length > 0 && !skipReasoning) {
     onProgress(20, '正在推理需求边界', {
@@ -1736,180 +1825,121 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     }
   }
 
-  const wantsRefineOnly = forcedStage === 'complete' || forcedStage === 'consistency';
-  const shouldRunMain = !wantsRefineOnly || !doc.trim();
+  const messages = [
+    { role: 'system', content: GENERATE_MAIN_SYSTEM },
+    { role: 'user', content: buildGenerateMainUser(userRequirement, reasoning, answers, scenario) },
+  ];
 
-  if (shouldRunMain) {
-    const baseProgress = doc.trim() ? 48 : 24;
-    const generatedDoc = await runStageWithRetries(
-      async () => {
-        const mainRaw = await requestLLMWithBudgetAndFallback(
-          [
-            { role: 'system', content: GENERATE_MAIN_SYSTEM },
-            { role: 'user', content: buildGenerateMainUser(userRequirement, reasoning, answers, scenario) },
-          ],
-          {
-            model: MODEL_V3,
-            fallbackModel,
-            stream: false,
-            max_tokens: generateMaxTokens,
-            timeout_ms: getStageTimeout(deadlineAt, GENERATE_MAX_MS, '主生成阶段'),
-          },
-          {
-            allowFallback: true,
-            fallbackAttempts: fallbackState.attempts,
-            maxFallbackAttempts: 1,
-            onFallbackUsed: () => {
-              fallbackState.attempts += 1;
-            },
-          }
-        );
-        const normalized = normalizePrimarySectionNumbers(String(mainRaw || ''));
-        const parsedMap = parseMarkdownToSectionMap(normalized);
-        const rendered = renderSectionMapMarkdown(parsedMap);
-        if (!rendered.trim()) {
-          throw new Error('主生成内容为空，请重试');
-        }
-        sectionMap = parsedMap;
-        return syncDocFromMap();
-      },
-      GENERATE_STAGE_MAX_ATTEMPTS,
-      (attempt) => onProgress(baseProgress, `正在生成高质量主稿（${attempt}/${GENERATE_STAGE_MAX_ATTEMPTS}）`, {
-        stage: 'running_generate_main',
-        outputLevel: 'draft',
-        document: doc,
-        latestDocumentSnapshot: doc,
-        stageProgress: Math.min(30 + attempt * 30, 95),
-        overallProgress: baseProgress,
-        attempt,
-        maxAttempts: GENERATE_STAGE_MAX_ATTEMPTS,
-      }),
-      (err) => onProgress(baseProgress, `主生成重试中：${err?.message || err}`, {
-        stage: 'running_generate_main',
-        outputLevel: 'draft',
-        document: doc,
-        latestDocumentSnapshot: doc,
-        lastError: err?.message || String(err),
-      })
-    ).catch((error) => {
-      if (doc.trim()) {
-        onProgress(65, `主生成失败，已保留可用稿：${error?.message || error}`, {
-          stage: 'completed_partial',
-          outputLevel: 'partial',
-          document: doc,
-          latestDocumentSnapshot: doc,
-          lastError: error?.message || String(error),
-        });
-        return doc;
-      }
-      throw error;
-    });
-    doc = generatedDoc;
-  } else {
-    onProgress(65, '已从快照恢复可用稿，准备补强', {
-      stage: 'running_refine',
-      outputLevel: 'partial',
+  let finalCheck = evaluateDocumentQuality(doc);
+  let lastAttemptError = null;
+
+  const runGenerateAttempt = async (model, attemptNo, totalAttempts, attemptLabel, progressBase) => {
+    onProgress(progressBase, `正在主生成（${attemptNo}/${totalAttempts}）：${attemptLabel}`, {
+      stage: 'running_generate_main',
+      outputLevel: 'draft',
       document: doc,
       latestDocumentSnapshot: doc,
-      overallProgress: 65,
+      stageProgress: Math.min(20 + attemptNo * 25, 95),
+      overallProgress: progressBase,
+      attempt: attemptNo,
+      maxAttempts: totalAttempts,
       fallbackAttempts: fallbackState.attempts,
-      reasoning,
+    });
+    const raw = await requestLLM(messages, {
+      model,
+      stream: false,
+      max_tokens: generateMaxTokens,
+      timeout_ms: getStageTimeout(deadlineAt, GENERATE_MAX_MS, '主生成阶段'),
+    });
+    const normalized = normalizePrimarySectionNumbers(String(raw || ''));
+    if (!normalized.trim()) {
+      const err = new Error('主生成返回空内容');
+      err.code = 'empty_output';
+      throw err;
+    }
+    const quality = evaluateDocumentQuality(normalized);
+    if (quality.hasStructuralGap) {
+      const err = new Error('主生成结果疑似截断，触发重试');
+      err.code = 'truncated_output';
+      throw err;
+    }
+    return quality;
+  };
+
+  let selectedQuality = null;
+  try {
+    selectedQuality = await runGenerateAttempt(
+      primaryModel,
+      1,
+      GENERATE_TOTAL_ATTEMPTS,
+      `主模型 ${primaryModel}`,
+      45
+    );
+  } catch (error) {
+    lastAttemptError = error;
+    onProgress(48, `主生成失败：${error?.message || error}`, {
+      stage: 'running_generate_main',
+      outputLevel: 'draft',
+      document: doc,
+      latestDocumentSnapshot: doc,
+      lastError: error?.message || String(error),
     });
   }
 
-  const initialCheck = evaluateSectionMapQuality(sectionMap);
-  if (initialCheck.incomplete && doc.trim()) {
-    const refinedDoc = await runStageWithRetries(
-      async () => {
-        const current = evaluateSectionMapQuality(sectionMap);
-        const targetIds = [...new Set([...current.missingSectionIds, ...current.weakSectionIds])];
-        if (targetIds.length === 0) return syncDocFromMap();
-        const missingSections = targetIds
-          .map((id) => SECTION_TITLE_BY_ID.get(id))
-          .filter(Boolean);
-        const weakSections = current.weakSectionIds
-          .map((id) => SECTION_TITLE_BY_ID.get(id))
-          .filter(Boolean);
-        const refineRaw = await requestLLMWithBudgetAndFallback(
-          [
-            { role: 'system', content: REFINE_SYSTEM },
-            {
-              role: 'user',
-              content: buildRefineUser(
-                userRequirement,
-                doc,
-                reasoning,
-                answers,
-                scenario,
-                missingSections,
-                weakSections,
-                current.qualityWarnings
-              ),
-            },
-          ],
-          {
-            model: MODEL_V3,
-            fallbackModel,
-            stream: false,
-            max_tokens: Math.max(2200, Math.floor(generateMaxTokens * 0.7)),
-            timeout_ms: getStageTimeout(deadlineAt, CONTINUE_MAX_MS, '定向补强阶段'),
-          },
-          {
-            allowFallback: true,
-            fallbackAttempts: fallbackState.attempts,
-            maxFallbackAttempts: 1,
-            onFallbackUsed: () => {
-              fallbackState.attempts += 1;
-            },
-          }
-        );
-        const normalized = normalizePrimarySectionNumbers(String(refineRaw || ''));
-        const parsedMap = parseMarkdownToSectionMap(normalized);
-        const rendered = renderSectionMapMarkdown(parsedMap);
-        if (!rendered.trim()) {
-          throw new Error('补强结果为空');
-        }
-        const beforeScore = current.completionScore;
-        const afterCheck = evaluateSectionMapQuality(parsedMap);
-        if (afterCheck.completionScore + 5 < beforeScore) {
-          throw new Error('补强结果质量下降，已拒绝覆盖');
-        }
-        sectionMap = parsedMap;
-        return syncDocFromMap();
-      },
-      GENERATE_STAGE_MAX_ATTEMPTS,
-      (attempt) => onProgress(82, `正在定向补强缺失/薄弱章节（${attempt}/${GENERATE_STAGE_MAX_ATTEMPTS}）`, {
-        stage: 'running_refine',
-        outputLevel: 'partial',
-        document: doc,
-        latestDocumentSnapshot: doc,
-        stageProgress: Math.min(45 + attempt * 25, 95),
-        overallProgress: 82,
-        attempt,
-        maxAttempts: GENERATE_STAGE_MAX_ATTEMPTS,
-      }),
-      (err) => onProgress(82, `补强重试中：${err?.message || err}`, {
-        stage: 'running_refine',
-        outputLevel: 'partial',
-        document: doc,
-        latestDocumentSnapshot: doc,
-        lastError: err?.message || String(err),
-      })
-    ).catch((error) => {
-      onProgress(90, `补强失败，保留当前可用稿：${error?.message || error}`, {
-        stage: 'completed_partial',
-        outputLevel: 'partial',
+  if (!selectedQuality && shouldRetryGenerateFailure(lastAttemptError)) {
+    try {
+      selectedQuality = await runGenerateAttempt(
+        primaryModel,
+        2,
+        GENERATE_TOTAL_ATTEMPTS,
+        `主模型重试 ${primaryModel}`,
+        62
+      );
+    } catch (error) {
+      lastAttemptError = error;
+      onProgress(66, `主模型重试失败：${error?.message || error}`, {
+        stage: 'running_generate_main',
+        outputLevel: 'draft',
         document: doc,
         latestDocumentSnapshot: doc,
         lastError: error?.message || String(error),
       });
-      return doc;
-    });
-    doc = refinedDoc;
+    }
   }
 
-  doc = syncDocFromMap();
-  const finalCheck = evaluateSectionMapQuality(sectionMap);
+  const canUseFallback = backupModel
+    && backupModel !== primaryModel
+    && fallbackState.attempts < MAX_FALLBACK_ATTEMPTS_PER_JOB;
+  if (!selectedQuality && canUseFallback) {
+    try {
+      fallbackState.attempts += 1;
+      selectedQuality = await runGenerateAttempt(
+        backupModel,
+        3,
+        GENERATE_TOTAL_ATTEMPTS,
+        `备用模型 ${backupModel}`,
+        78
+      );
+    } catch (error) {
+      lastAttemptError = error;
+      onProgress(82, `备用模型失败：${error?.message || error}`, {
+        stage: 'running_generate_main',
+        outputLevel: 'draft',
+        document: doc,
+        latestDocumentSnapshot: doc,
+        lastError: error?.message || String(error),
+        fallbackAttempts: fallbackState.attempts,
+      });
+    }
+  }
+
+  if (!selectedQuality) {
+    const err = lastAttemptError || new Error('主生成失败');
+    throw err;
+  }
+
+  doc = selectedQuality.document;
+  finalCheck = selectedQuality;
   const isFinal = finalCheck.isFinalReady;
   onProgress(98, isFinal ? '最终稿已完成' : '生成了可用稿，部分章节待补齐', {
     stage: isFinal ? 'completed_final' : 'completed_partial',
@@ -1926,7 +1956,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
     qualityWarnings: finalCheck.qualityWarnings,
     fallbackAttempts: fallbackState.attempts,
     attempt: job.attempt || 0,
-    maxAttempts: job.maxAttempts || GENERATE_STAGE_MAX_ATTEMPTS,
+    maxAttempts: GENERATE_TOTAL_ATTEMPTS,
   });
   return {
     document: doc,
@@ -1975,7 +2005,7 @@ function enqueueGenerationJob(payload) {
     completionScore: 0,
     qualityWarnings: [],
     attempt: 0,
-    maxAttempts: GENERATE_STAGE_MAX_ATTEMPTS,
+    maxAttempts: GENERATE_TOTAL_ATTEMPTS,
     forcedStage: '',
     reasoning: '',
     createdAt: now,
@@ -2758,7 +2788,7 @@ app.get('/api/document/generate/:jobId', attachOptionalAuth, attachPlanInfo, asy
     elapsedMs,
     remainingMs,
     attempt: job.attempt ?? 0,
-    maxAttempts: job.maxAttempts ?? GENERATE_STAGE_MAX_ATTEMPTS,
+    maxAttempts: job.maxAttempts ?? GENERATE_TOTAL_ATTEMPTS,
     lastError: job.lastError || '',
     fallbackAttempts: job.fallbackAttempts,
     missingSections: job.missingSections,
@@ -2791,9 +2821,6 @@ app.post('/api/document/generate/:jobId/retry-stage', attachOptionalAuth, attach
   res.set(jsonHeader);
   cleanupGenerationJobs();
   const jobId = sanitizeText(req.params?.jobId, 80);
-  const requested = sanitizeText(req.body?.stage, 40);
-  const allowed = new Set(['draft', 'complete', 'consistency', 'refine']);
-  const requestedStage = allowed.has(requested) ? requested : '';
   const job = generationJobs.get(jobId);
   if (!job) {
     return res.status(404).json({ success: false, message: '任务不存在或已过期' });
@@ -2805,16 +2832,13 @@ app.post('/api/document/generate/:jobId/retry-stage', attachOptionalAuth, attach
     return res.json({ success: true, jobId: job.id, status: job.status, message: '任务执行中，无需重试' });
   }
 
-  const nextStage =
-    requestedStage ||
-    (job.stage === 'running_refine' || job.stage === 'completed_partial' ? 'complete' : 'draft');
-  const forcedStage = (nextStage === 'refine' || nextStage === 'consistency') ? 'complete' : nextStage;
+  const forcedStage = 'draft';
   const now = Date.now();
   updateGenerationJob(jobId, {
     status: 'queued',
-    lifecycle: forcedStage === 'complete' ? 'running_refine' : 'running_generate_main',
-    stage: forcedStage === 'complete' ? 'running_refine' : 'running_generate_main',
-    step: `准备重试阶段：${forcedStage === 'complete' ? 'refine' : 'generate_main'}`,
+    lifecycle: 'running_generate_main',
+    stage: 'running_generate_main',
+    step: '准备重试阶段：主生成',
     forcedStage,
     message: '',
     attempt: 0,
@@ -2829,7 +2853,7 @@ app.post('/api/document/generate/:jobId/retry-stage', attachOptionalAuth, attach
     success: true,
     jobId: job.id,
     status: 'queued',
-    stage: forcedStage === 'complete' ? 'running_refine' : 'running_generate_main',
+    stage: 'running_generate_main',
     forcedStage,
   });
 }));

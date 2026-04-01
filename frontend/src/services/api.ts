@@ -205,7 +205,7 @@ export interface GenerateJobCreateRes {
   success: boolean;
   jobId?: string;
   status?: 'queued' | 'running' | 'completed' | 'failed';
-  lifecycle?: 'queued' | 'running_generate_main' | 'running_refine' | 'completed_final' | 'completed_partial' | 'failed_fatal';
+  lifecycle?: 'queued' | 'running_generate_main' | 'completed_final' | 'completed_partial' | 'failed_fatal';
   stage?: string;
   outputLevel?: 'draft' | 'partial' | 'final';
   progress?: number;
@@ -244,7 +244,7 @@ export interface GenerateJobStatusRes {
   success: boolean;
   jobId?: string;
   status?: 'queued' | 'running' | 'completed' | 'failed';
-  lifecycle?: 'queued' | 'running_generate_main' | 'running_refine' | 'completed_final' | 'completed_partial' | 'failed_fatal';
+  lifecycle?: 'queued' | 'running_generate_main' | 'completed_final' | 'completed_partial' | 'failed_fatal';
   stage?: string;
   outputLevel?: 'draft' | 'partial' | 'final';
   progress?: number;
@@ -285,7 +285,7 @@ export interface GenerateJobActionRes {
   jobId?: string;
   status?: 'queued' | 'running' | 'completed' | 'failed';
   stage?: string;
-  forcedStage?: 'draft' | 'complete' | 'consistency' | 'refine';
+  forcedStage?: 'draft';
   message?: string;
   plan?: string;
   quotaRemaining?: {

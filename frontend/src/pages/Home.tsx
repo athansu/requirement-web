@@ -70,7 +70,6 @@ const HOME_STORAGE_KEY = 'requirement-website.home-state.v1';
 const LOW_REMAINING_THRESHOLD_MS = 30000;
 const POLL_INTERVAL_MS = 2500;
 const POLL_INTERVAL_QUEUED_MS = 3500;
-const POLL_INTERVAL_FINALIZING_MS = 3000;
 const GENERATE_MAX_WAIT_MS = Math.max(Number(import.meta.env.VITE_GENERATE_MAX_WAIT_MS) || 540000, 60000);
 const ZERO_BUDGET_GRACE_MS = 30000;
 const HOME_STATE_TTL_MS = Math.max(Number(import.meta.env.VITE_HOME_STATE_TTL_MS) || 20 * 60 * 1000, 60 * 1000);
@@ -78,7 +77,6 @@ const HOME_STATE_TTL_MS = Math.max(Number(import.meta.env.VITE_HOME_STATE_TTL_MS
 function stageLabel(stage: string | undefined) {
   switch (stage) {
     case 'running_generate_main': return '主生成';
-    case 'running_refine': return '定向补强';
     case 'completed_final': return '最终完成';
     case 'completed_partial': return '可用初稿';
     case 'failed_fatal': return '任务失败';
@@ -96,11 +94,8 @@ function formatMs(ms: number) {
   return `${min}分${rem}秒`;
 }
 
-function getPollDelay(status: string | undefined, stage: string | undefined) {
+function getPollDelay(status: string | undefined) {
   if (status === 'queued') return POLL_INTERVAL_QUEUED_MS;
-  if (stage === 'running_refine') {
-    return POLL_INTERVAL_FINALIZING_MS;
-  }
   return POLL_INTERVAL_MS;
 }
 
@@ -560,7 +555,7 @@ export function Home({ onGenerate }: HomeProps) {
         zeroBudgetSince = 0;
       }
 
-      await sleep(getPollDelay(statusRes.status, statusRes.stage));
+      await sleep(getPollDelay(statusRes.status));
     }
 
     if (latestDoc.trim()) {
