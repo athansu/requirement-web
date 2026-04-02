@@ -1,10 +1,10 @@
 /** 默认澄清问题（与 PRD 九部分对齐），兜底用 */
 export const DEFAULT_CLARIFY_QUESTIONS = [
-  '目标用户主要是谁？有哪些典型使用场景？',
-  '首期必须上线的核心功能有哪些？优先级如何？',
-  '是否有现成系统、接口或数据需要对接？',
-  '预期上线时间或重要里程碑（如 MVP 范围）？',
-  '技术栈、预算或资源有无限制？是否有商业化/变现考虑？',
+  '这次要优先达成的业务目标是什么？如何判断上线后是成功的？',
+  '核心用户是谁？他们最常见的使用场景和痛点分别是什么？',
+  'MVP 必做的 P0 功能有哪些？哪些内容明确不在本次范围内？',
+  '是否有必须对接的系统/接口/数据源？技术栈、部署或合规有什么硬约束？',
+  '你希望文档输出哪些可执行信息（例如验收标准、接口约束、默认假设）？',
 ];
 
 const PERSONA =
@@ -33,11 +33,19 @@ function buildScenarioBlock(scenario) {
 
 // ---------- Phase1 澄清 ----------
 export const CLARIFY_SYSTEM = `${PERSONA}
-你的任务：根据用户的一句话需求，生成最多 5 个澄清问题，帮助明确目标用户、核心功能、对接与时间线、资源与商业化等。
-要求：只输出问题列表，每行一个问题，不要编号、不要解释。问题用中文，简洁明确。`;
+你的任务：根据用户的一句话需求，生成 3-5 个“实现导向”的澄清问题，帮助后续产出可直接给 AI Coding 执行的开发文档。
+
+问题设计原则：
+- 优先补齐会影响实现决策的信息，不问泛问题。
+- 重点覆盖：业务目标与成功标准、用户场景、P0范围与不做项、技术/集成约束、验收上线约束。
+- 若用户输入已明确某类信息，不要重复追问同类问题。
+
+输出要求：
+- 只输出问题列表，每行一个问题。
+- 不要编号，不要解释，不要输出除问题外的任何内容。`;
 
 export function buildClarifyUser(requirement, scenario) {
-  return `${buildScenarioBlock(scenario)}用户的一句话需求：\n${requirement}\n\n请生成最多 5 个澄清问题，每行一个：`;
+  return `${buildScenarioBlock(scenario)}用户的一句话需求：\n${requirement}\n\n请输出 3-5 个实现导向的澄清问题（每行一个）：`;
 }
 
 /** 从模型回复中解析出问题数组 */
@@ -62,8 +70,18 @@ export function ensureClarifyQuestions(parsed) {
 
 // ---------- Phase2 推理 ----------
 export const REASON_SYSTEM = `${PERSONA}
-你的任务：根据用户的一句话需求与澄清回答，做结构化推理，输出关键决策与范围（目标用户、核心功能边界、优先级、技术/资源约束、商业化方向等）。
-输出要求：一段连贯的推理结论，直接作为后续 PRD 生成的输入，不要用列表或代码块。`;
+你的任务：根据用户的一句话需求与澄清回答，输出“开发决策底稿”，用于后续主生成。
+
+输出结构（必须按顺序）：
+1) 已确认事实（Confirmed Facts）
+2) 默认假设（Default Assumptions）
+3) 范围边界（In Scope / Out of Scope）
+4) 实现风险（Implementation Risks）
+
+要求：
+- 每部分 2-5 条，简洁具体，面向可实现决策。
+- 允许中文小标题和条目列表。
+- 禁止代码块、禁止空泛口号。`;
 
 export function buildReasonUser(requirement, clarificationAnswers, scenario) {
   let block = `${buildScenarioBlock(scenario)}用户需求：\n${requirement}\n\n`;
@@ -73,7 +91,7 @@ export function buildReasonUser(requirement, clarificationAnswers, scenario) {
       block += `- ${q}\n  ${a || '(未回答)'}\n`;
     });
   }
-  block += '\n请给出结构化推理结论（一段话）：';
+  block += '\n请按指定结构输出“开发决策底稿”：';
   return block;
 }
 
@@ -94,16 +112,22 @@ ${NINE_SECTIONS}
 - 不要将整段正文或表格放在代码块内。`;
 
 export const GENERATE_MAIN_SYSTEM = `${PERSONA}
-你的任务：根据用户需求、澄清回答和推理结论，一次性输出高质量、可执行的需求 Markdown 文档。
+你的任务：根据用户需求、澄清回答和推理结论，一次性输出“产品+技术混合”的可执行需求 Markdown 文档，目标是可直接交给 AI Coding 落地实现。
 
 输出目标：
-- 优先保证内容质量与可执行性（明确约束、流程、指标、边界）。
-- 目标覆盖 9 个章节（按顺序）：
+- 保持 9 章标题与顺序不变（用于兼容系统校验）：
 ${NINE_SECTIONS}
 
 写作要求：
-- 每章提供 2-4 个关键点，避免空泛口号。
-- 面向实际落地：给出可执行约束、关键流程、可观测指标。
+- 每章必须包含可执行细节，不允许只有产品描述。
+- 每章至少明确以下标签中的 2-3 项，并使用显式文本标记：
+  - 实现要点：
+  - 约束/规则：
+  - 验收标准：
+  - 默认假设：
+- 对于功能与技术相关章节（4-9），优先补齐：输入输出、边界条件、异常处理、依赖项、验收口径。
+- 禁止空话：如“优化体验/提升效率”必须带条件、阈值、动作或责任对象。
+- 若信息缺失，必须写出“默认假设 + 风险影响”，禁止静默跳过。
 - 不输出 HTML 标签，不输出代码块，不输出与文档无关说明。
 - Markdown 结构清晰，标题层级稳定。`;
 
@@ -131,7 +155,7 @@ export function buildGenerateMainUser(requirement, reasoning, clarificationAnswe
     });
     block += '\n';
   }
-  block += '请一次性输出高质量需求 Markdown（仅文档正文，不要解释）：';
+  block += '请一次性输出可直接执行的需求 Markdown（仅文档正文，不要解释）：';
   return block;
 }
 
@@ -340,6 +364,7 @@ export const REVISE_APPLY_SYSTEM = `${PERSONA}
 - supplement（insert_after_selected）：在选中文本后插入用户输入内容；可做最小必要润色，不得扩展新范围。
 
 ${REVISE_COMMON_RULES}
+- 若改动影响实现约束、验收口径或默认假设，必须在相关位置做最小必要同步更新。
 只输出完整文档内容，不要解释。`;
 
 export const REVISE_CONSISTENCY_SYSTEM = `${PERSONA}
@@ -352,6 +377,7 @@ export const REVISE_CONSISTENCY_SYSTEM = `${PERSONA}
 - 保持“最小必要补充”原则，不新增产品范围或新功能模块。
 - delete 标注触发的调整不得新增发散内容。
 - 仅在确有必要时联动修改，并记录联动项。
+- 必须优先检查并修复：约束/规则、验收标准、默认假设、接口与数据口径的一致性。
 - 输出必须是 JSON 对象，不要 Markdown，不要代码块：
 {"finalDocument":"完整文档字符串","linkedUpdates":[{"section":"章节名","summary":"改了什么","reason":"为什么改"}]}
 

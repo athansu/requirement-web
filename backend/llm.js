@@ -20,7 +20,7 @@ export async function requestLLM(messages, options = {}) {
   const model = options.model || process.env.LLM_MODEL || 'deepseek-chat';
   const stream = options.stream !== false;
   const timeoutMs = Math.max(
-    Number(options.timeout_ms ?? process.env.LLM_TIMEOUT_MS) || 300000,
+    Number(options.timeout_ms ?? process.env.LLM_TIMEOUT_MS) || 480000,
     1000
   );
   const url = new URL('/v1/chat/completions', BASE_URL);
@@ -28,7 +28,7 @@ export async function requestLLM(messages, options = {}) {
     model,
     messages,
     stream,
-    max_tokens: options.max_tokens ?? 8192,
+    max_tokens: options.max_tokens ?? 12288,
   });
 
   const agent = PROXY ? new HttpsProxyAgent(PROXY) : undefined;

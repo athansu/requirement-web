@@ -82,22 +82,27 @@ const SECTION_QUALITY_SIGNALS = {
   8: { minHits: 1, terms: ['AI', '模型', '推荐', '生成', '自动化', '能力'] },
   9: { minHits: 2, terms: ['商业化', '变现', '订阅', '广告', '收入', '指标'] },
 };
+const QUALITY_FEATURE_SECTION_IDS = new Set([4, 5, 6, 7, 8, 9]);
+const CONSTRAINT_FEATURE_TERMS = ['约束', '规则', '边界', '前置条件', '限制', '必须', '禁止', '依赖'];
+const ACCEPTANCE_FEATURE_TERMS = ['验收', '验收标准', '通过条件', '完成定义', '成功标准', 'KPI', '指标'];
+const ASSUMPTION_FEATURE_TERMS = ['默认假设', '假设', '前提', '若未明确', 'Assumption', '假定'];
 const GEN_TOTAL_BUDGET_MS = Math.max(Number(process.env.GEN_TOTAL_BUDGET_MS) || 480000, 60000);
-const REASON_MAX_MS = Math.max(Number(process.env.REASON_MAX_MS) || 90000, 5000);
-const GENERATE_MAX_MS = Math.max(Number(process.env.GENERATE_MAX_MS) || 180000, 5000);
+const REASON_MAX_MS = Math.max(Number(process.env.REASON_MAX_MS) || 180000, 5000);
+const GENERATE_MAX_MS = Math.max(Number(process.env.GENERATE_MAX_MS) || 360000, 5000);
 const CONTINUE_MAX_MS = Math.max(Number(process.env.CONTINUE_MAX_MS) || 90000, 5000);
-const DRAFT_MAX_MS = Math.max(Number(process.env.DRAFT_MAX_MS) || 120000, 5000);
+const DRAFT_MAX_MS = Math.max(Number(process.env.DRAFT_MAX_MS) || 180000, 5000);
 const GENERATE_TOTAL_ATTEMPTS = 3;
+const MAX_OUTPUT_TOKENS = 12288;
 const SAFETY_MARGIN_MS = Math.max(Number(process.env.SAFETY_MARGIN_MS) || 15000, 1000);
 const MAX_FALLBACK_ATTEMPTS_PER_JOB = Math.max(
   Number(process.env.MAX_FALLBACK_ATTEMPTS_PER_JOB) || 2,
   0
 );
 const MIN_STAGE_TIMEOUT_MS = 5000;
-const QUALITY_MIN_FINAL_CHARS = Math.max(Number(process.env.QUALITY_MIN_FINAL_CHARS) || 2200, 600);
+const QUALITY_MIN_FINAL_CHARS = Math.max(Number(process.env.QUALITY_MIN_FINAL_CHARS) || 4500, 600);
 const REVISE_TOTAL_BUDGET_MS = Math.max(Number(process.env.REVISE_TOTAL_BUDGET_MS) || 180000, 60000);
-const REVISE_APPLY_MAX_MS = Math.max(Number(process.env.REVISE_APPLY_MAX_MS) || 120000, 10000);
-const REVISE_CONSISTENCY_MAX_MS = Math.max(Number(process.env.REVISE_CONSISTENCY_MAX_MS) || 70000, 5000);
+const REVISE_APPLY_MAX_MS = Math.max(Number(process.env.REVISE_APPLY_MAX_MS) || 240000, 10000);
+const REVISE_CONSISTENCY_MAX_MS = Math.max(Number(process.env.REVISE_CONSISTENCY_MAX_MS) || 160000, 5000);
 const REVISE_CONSISTENCY_MAX_ATTEMPTS = Math.max(
   Number(process.env.REVISE_CONSISTENCY_MAX_ATTEMPTS) || 2,
   1
@@ -1229,11 +1234,12 @@ function evaluateDocumentQuality(document) {
   const missingSectionIds = SECTION_DEFINITIONS
     .filter((item) => !presentIds.has(item.id))
     .map((item) => item.id);
-  const weakSectionIds = sections
+  const weakSectionIdSet = new Set(sections
     .filter((item) => item.content.length > 0 && item.content.length < MIN_SECTION_CONTENT_CHARS)
-    .map((item) => item.id);
+    .map((item) => item.id));
   const hasGap = hasStructuralGap(normalized);
   const qualityWarnings = [];
+  const hasFeatureTerm = (text, terms) => terms.some((term) => text.includes(String(term).toLowerCase()));
   if (!normalized) qualityWarnings.push('文档为空');
   if (normalized.length < QUALITY_MIN_FINAL_CHARS) {
     qualityWarnings.push(`正文长度偏短（${normalized.length} 字，建议不少于 ${QUALITY_MIN_FINAL_CHARS} 字）`);
@@ -1242,7 +1248,23 @@ function evaluateDocumentQuality(document) {
     qualityWarnings.push(`章节覆盖不足（缺失 ${missingSectionIds.length} 章）`);
   }
   if (hasGap) qualityWarnings.push('文档尾部闭合校验未通过（可能存在半句或括号未闭合）');
-  const uniqueWeak = [...new Set(weakSectionIds)].sort((a, b) => a - b);
+  for (const section of sections) {
+    if (!QUALITY_FEATURE_SECTION_IDS.has(section.id) || !section.content) continue;
+    const lower = section.content.toLowerCase();
+    const lacksConstraint = !hasFeatureTerm(lower, CONSTRAINT_FEATURE_TERMS);
+    const lacksAcceptance = !hasFeatureTerm(lower, ACCEPTANCE_FEATURE_TERMS);
+    const lacksAssumption = !hasFeatureTerm(lower, ASSUMPTION_FEATURE_TERMS);
+    if (lacksConstraint || lacksAcceptance || lacksAssumption) {
+      weakSectionIdSet.add(section.id);
+      const missingFeatures = [];
+      if (lacksConstraint) missingFeatures.push('约束/规则');
+      if (lacksAcceptance) missingFeatures.push('验收标准');
+      if (lacksAssumption) missingFeatures.push('默认假设');
+      qualityWarnings.push(`章节 ${section.id} 缺少关键可执行特征：${missingFeatures.join('、')}`);
+    }
+  }
+
+  const uniqueWeak = [...weakSectionIdSet].sort((a, b) => a - b);
   if (uniqueWeak.length > 0) {
     qualityWarnings.push(`部分章节信息密度偏低（ID: ${uniqueWeak.join(',')}）`);
   }
@@ -1257,7 +1279,8 @@ function evaluateDocumentQuality(document) {
   const isFinalReady =
     normalized.length >= QUALITY_MIN_FINAL_CHARS
     && coverageCount >= 8
-    && !hasGap;
+    && !hasGap
+    && completionScore >= FINAL_COMPLETION_SCORE_THRESHOLD;
   return {
     document: normalized,
     missingSectionIds,
@@ -1474,6 +1497,7 @@ async function executeReviseConsistencyOnce(appliedDocument, annotations, affect
       model: REVISE_CONSISTENCY_MODEL,
       fallbackModel: REVISE_CONSISTENCY_FALLBACK_MODEL,
       stream: false,
+      max_tokens: MAX_OUTPUT_TOKENS,
       timeout_ms: timeoutMs,
     },
     { allowFallback: true, fallbackAttempts: 0, maxFallbackAttempts: 1 }
@@ -1790,10 +1814,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
   const { userRequirement, answers, scenario } = payload;
   const skipReasoning = process.env.FAST_GENERATE === '1' || process.env.FAST_GENERATE === 'true';
   const fallbackState = { attempts: Number(job.fallbackAttempts) || 0 };
-  const generateMaxTokens = Math.min(
-    Math.max(Number(process.env.GENERATE_MAX_TOKENS) || 4096, 2048),
-    12288
-  );
+  const generateMaxTokens = MAX_OUTPUT_TOKENS;
 
   const existingSnapshot = typeof job.latestDocumentSnapshot === 'string' ? job.latestDocumentSnapshot.trim() : '';
   let doc = existingSnapshot;
@@ -1815,6 +1836,7 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
         ],
         {
           model: MODEL_R1,
+          max_tokens: MAX_OUTPUT_TOKENS,
           timeout_ms: getStageTimeout(deadlineAt, REASON_MAX_MS, '推理阶段'),
         }
       );
@@ -2255,8 +2277,8 @@ app.post('/api/trial/generate', asyncRoute(async (req, res) => {
         model: MODEL_V3,
         fallbackModel: MODEL_V3_FALLBACK || MODEL_R1,
         stream: false,
-        max_tokens: 2800,
-        timeout_ms: Math.min(DRAFT_MAX_MS, 90000),
+        max_tokens: MAX_OUTPUT_TOKENS,
+        timeout_ms: DRAFT_MAX_MS,
       },
       { allowFallback: true, fallbackAttempts: 0, maxFallbackAttempts: 1 }
     );
@@ -2650,7 +2672,12 @@ app.post('/api/clarify', attachOptionalAuth, attachPlanInfo, asyncRoute(async (r
         { role: 'system', content: CLARIFY_SYSTEM },
         { role: 'user', content: buildClarifyUser(userRequirement, scenario) },
       ],
-      { model: MODEL_V3, fallbackModel: MODEL_V3_FALLBACK || MODEL_R1, timeout_ms: 45000 },
+      {
+        model: MODEL_V3,
+        fallbackModel: MODEL_V3_FALLBACK || MODEL_R1,
+        max_tokens: MAX_OUTPUT_TOKENS,
+        timeout_ms: 45000,
+      },
       { allowFallback: true, fallbackAttempts: 0, maxFallbackAttempts: 1 }
     );
     const parsed = parseClarifyResponse(content);
@@ -2928,6 +2955,7 @@ app.post('/api/document/revise', attachOptionalAuth, attachPlanInfo, asyncRoute(
         model: REVISE_APPLY_MODEL,
         fallbackModel: REVISE_APPLY_FALLBACK_MODEL,
         stream: false,
+        max_tokens: MAX_OUTPUT_TOKENS,
         timeout_ms: REVISE_APPLY_MAX_MS,
       },
       { allowFallback: true, fallbackAttempts: 0, maxFallbackAttempts: 1 }
