@@ -19,6 +19,9 @@ export async function requestLLM(messages, options = {}) {
   }
   const model = options.model || process.env.LLM_MODEL || 'deepseek-chat';
   const stream = options.stream !== false;
+  const maxTokensCap = Math.max(Number(process.env.LLM_MAX_TOKENS_CAP) || 8192, 512);
+  const requestedMaxTokens = Number(options.max_tokens ?? process.env.LLM_DEFAULT_MAX_TOKENS) || 4096;
+  const normalizedMaxTokens = Math.min(Math.max(requestedMaxTokens, 1), maxTokensCap);
   const timeoutMs = Math.max(
     Number(options.timeout_ms ?? process.env.LLM_TIMEOUT_MS) || 480000,
     1000
@@ -28,7 +31,7 @@ export async function requestLLM(messages, options = {}) {
     model,
     messages,
     stream,
-    max_tokens: options.max_tokens ?? 12288,
+    max_tokens: normalizedMaxTokens,
   });
 
   const agent = PROXY ? new HttpsProxyAgent(PROXY) : undefined;

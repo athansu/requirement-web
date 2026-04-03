@@ -92,7 +92,11 @@ const GENERATE_MAX_MS = Math.max(Number(process.env.GENERATE_MAX_MS) || 360000, 
 const CONTINUE_MAX_MS = Math.max(Number(process.env.CONTINUE_MAX_MS) || 90000, 5000);
 const DRAFT_MAX_MS = Math.max(Number(process.env.DRAFT_MAX_MS) || 180000, 5000);
 const GENERATE_TOTAL_ATTEMPTS = 3;
-const MAX_OUTPUT_TOKENS = 12288;
+const LLM_MAX_TOKENS_CAP = Math.max(Number(process.env.LLM_MAX_TOKENS_CAP) || 8192, 512);
+const MAX_OUTPUT_TOKENS = Math.min(
+  Math.max(Number(process.env.MAX_OUTPUT_TOKENS) || 12288, 256),
+  LLM_MAX_TOKENS_CAP
+);
 const SAFETY_MARGIN_MS = Math.max(Number(process.env.SAFETY_MARGIN_MS) || 15000, 1000);
 const MAX_FALLBACK_ATTEMPTS_PER_JOB = Math.max(
   Number(process.env.MAX_FALLBACK_ATTEMPTS_PER_JOB) || 2,
@@ -2628,6 +2632,7 @@ app.get('/api/health', (req, res) => {
     frontendDist: hasFrontendDist,
     modelV3: MODEL_V3,
     modelR1: MODEL_R1,
+    maxOutputTokens: MAX_OUTPUT_TOKENS,
     queueLength: generationQueue.length,
     reviseConsistencyQueueLength: reviseConsistencyQueue.length,
     users: usersById.size,
