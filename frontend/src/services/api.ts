@@ -16,6 +16,26 @@ type StoredAuth = {
   refreshToken: string;
 };
 
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
+}
+
+function isNetworkFetchError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /failed to fetch|networkerror|load failed|fetch failed/i.test(message);
+}
+
+function normalizeFetchError(path: string, timeoutMs: number, error: unknown): Error {
+  if (isAbortError(error)) {
+    return new Error(`请求超时，超过 ${timeoutMs}ms 仍未完成。复杂场景建议稍后重试，或缩小首版需求范围。`);
+  }
+  if (isNetworkFetchError(error)) {
+    return new Error(`网络连接异常，无法访问服务端接口（${path}）。请稍后重试。`);
+  }
+  if (error instanceof Error) return error;
+  return new Error(`请求失败（${path}）`);
+}
+
 export class ApiError extends Error {
   status: number;
   code?: string;
@@ -85,10 +105,7 @@ async function post<T>(path: string, body: object, timeoutMs = API_TIMEOUT_MS): 
       signal: controller.signal,
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
-      throw new Error(`请求超时，超过 ${timeoutMs}ms 仍未完成。复杂场景建议稍后重试，或缩小首版需求范围。`);
-    }
-    throw error;
+    throw normalizeFetchError(path, timeoutMs, error);
   } finally {
     window.clearTimeout(timeoutId);
   }
@@ -136,10 +153,10 @@ async function get<T>(path: string, timeoutMs = JOB_STATUS_TIMEOUT_MS): Promise<
       },
     });
   } catch (error) {
-    if (error instanceof DOMException && error.name === 'AbortError') {
+    if (isAbortError(error)) {
       throw new Error(`请求超时，超过 ${timeoutMs}ms 仍未完成`);
     }
-    throw error;
+    throw normalizeFetchError(path, timeoutMs, error);
   } finally {
     window.clearTimeout(timeoutId);
   }

@@ -70,6 +70,8 @@ const HOME_STORAGE_KEY = 'requirement-website.home-state.v1';
 const LOW_REMAINING_THRESHOLD_MS = 30000;
 const POLL_INTERVAL_MS = 2500;
 const POLL_INTERVAL_QUEUED_MS = 3500;
+const POLL_TRANSIENT_ERROR_MAX = 8;
+const POLL_TRANSIENT_BACKOFF_MS = 1500;
 const GENERATE_MAX_WAIT_MS = Math.max(Number(import.meta.env.VITE_GENERATE_MAX_WAIT_MS) || 540000, 60000);
 const ZERO_BUDGET_GRACE_MS = 30000;
 const HOME_STATE_TTL_MS = Math.max(Number(import.meta.env.VITE_HOME_STATE_TTL_MS) || 20 * 60 * 1000, 60 * 1000);
@@ -97,6 +99,11 @@ function formatMs(ms: number) {
 function getPollDelay(status: string | undefined) {
   if (status === 'queued') return POLL_INTERVAL_QUEUED_MS;
   return POLL_INTERVAL_MS;
+}
+
+function isTransientPollError(error: unknown): boolean {
+  if (!(error instanceof ApiError)) return true;
+  return error.status === 429 || error.status >= 500;
 }
 
 interface PersistedHomeState {
@@ -481,9 +488,27 @@ export function Home({ onGenerate }: HomeProps) {
     const startedAt = Date.now();
     let zeroBudgetSince = 0;
     let latestDoc = '';
+    let transientPollFailures = 0;
 
     while (Date.now() - startedAt <= GENERATE_MAX_WAIT_MS) {
-      const statusRes = await getGenerateJobStatus(jobId);
+      let statusRes: Awaited<ReturnType<typeof getGenerateJobStatus>>;
+      try {
+        statusRes = await getGenerateJobStatus(jobId);
+        transientPollFailures = 0;
+      } catch (error) {
+        if (pollingJobRef.current !== jobId) {
+          return;
+        }
+        const canRecover = isTransientPollError(error);
+        transientPollFailures += 1;
+        if (!canRecover || transientPollFailures > POLL_TRANSIENT_ERROR_MAX) {
+          throw error;
+        }
+        setLastError(error instanceof Error ? error.message : '状态查询失败');
+        setGenerateStepText(`状态查询网络抖动，正在重试（${transientPollFailures}/${POLL_TRANSIENT_ERROR_MAX}）`);
+        await sleep(Math.min(POLL_TRANSIENT_BACKOFF_MS * transientPollFailures, 8000));
+        continue;
+      }
 
       if (pollingJobRef.current !== jobId) {
         return;
