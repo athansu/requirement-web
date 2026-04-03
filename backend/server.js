@@ -1884,7 +1884,9 @@ async function generateDocumentFlow(job, onProgress = () => {}) {
       throw err;
     }
     const quality = evaluateDocumentQuality(normalized);
-    if (quality.hasStructuralGap) {
+    // Only treat obvious short-and-truncated output as retryable failure.
+    // Long drafts with minor tail issues should be returned as partial instead of hard fail.
+    if (quality.hasStructuralGap && normalized.length < Math.floor(QUALITY_MIN_FINAL_CHARS * 0.6)) {
       const err = new Error('主生成结果疑似截断，触发重试');
       err.code = 'truncated_output';
       throw err;
