@@ -134,8 +134,16 @@ const USER_STORE_FILE = path.resolve(__dirname, './data/platform-store.json');
 const JOB_STORE_FILE = path.resolve(__dirname, './data/job-store.json');
 const ENABLE_STRUCTURED_LOG = process.env.STRUCTURED_LOG !== '0';
 const SENTRY_DSN = (process.env.SENTRY_DSN || '').trim();
-const SUPPORTED_PAYMENT_PROVIDERS = new Set(['stripe', 'wechatpay', 'alipay']);
-const PAYMENT_CHECKOUT_BASE_URL = (process.env.PAYMENT_CHECKOUT_BASE_URL || '').trim().replace(/\/+$/, '');
+const SUPPORTED_PAYMENT_PROVIDERS = new Set(['paddle']);
+const PADDLE_ENV = (process.env.PADDLE_ENV || 'sandbox').trim().toLowerCase();
+const PADDLE_API_KEY = sanitizeEnvSecret(process.env.PADDLE_API_KEY, '');
+const PADDLE_WEBHOOK_SECRET = sanitizeEnvSecret(process.env.PADDLE_WEBHOOK_SECRET, '');
+const PADDLE_PRICE_ID_CNY = sanitizeEnvSecret(process.env.PADDLE_PRICE_ID_CNY, '');
+const PADDLE_PRICE_ID_USD = sanitizeEnvSecret(process.env.PADDLE_PRICE_ID_USD, '');
+const PADDLE_SUCCESS_URL = (process.env.PADDLE_SUCCESS_URL || '').trim();
+const PADDLE_CANCEL_URL = (process.env.PADDLE_CANCEL_URL || '').trim();
+const PADDLE_CHECKOUT_LOCALE = (process.env.PADDLE_CHECKOUT_LOCALE || 'zh').trim();
+const WEBHOOK_EVENT_TTL_MS = Math.max(Number(process.env.WEBHOOK_EVENT_TTL_MS) || 45 * 24 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
 const ANON_TRIAL_TOKEN_TTL_MS = Math.max(Number(process.env.ANON_TRIAL_TOKEN_TTL_MS) || 30 * 60 * 1000, 60 * 1000);
 const ANON_TRIAL_MAX_PREVIEW_CHARS = Math.max(Number(process.env.ANON_TRIAL_MAX_PREVIEW_CHARS) || 20000, 2000);
 const ANON_QUOTA_ENFORCED = process.env.ANON_QUOTA_ENFORCED
@@ -157,12 +165,23 @@ const PLANS = {
     id: 'pro',
     name: 'Pro',
     cycle: ['monthly'],
-    priceCny: { monthly: 99, yearly: 99 },
-    priceUsd: { monthly: 15, yearly: 15 },
+    priceCny: { monthly: 9.9, yearly: 9.9 },
+    priceUsd: { monthly: 3.99, yearly: 3.99 },
     limits: { monthlyGenerate: 999999, monthlyRevise: 999999, monthlyTokens: 50000000, maxConcurrentJobs: 5, perMinRequests: 240 },
     entitlements: { canDownload: true },
   },
 };
+const FUNNEL_EVENTS = new Set([
+  'visit',
+  'start_generate',
+  'enter_editor',
+  'click_export',
+  'login_success',
+  'checkout_start',
+  'checkout_success',
+  'export_success',
+]);
+const MAX_ANALYTICS_EVENTS = Math.max(Number(process.env.MAX_ANALYTICS_EVENTS) || 5000, 500);
 const frontendDistDir = path.resolve(__dirname, '../frontend/dist');
 const frontendIndexFile = path.join(frontendDistDir, 'index.html');
 const hasFrontendDist = fs.existsSync(frontendIndexFile);
@@ -191,7 +210,15 @@ app.use(cors(
       }
     : undefined
 ));
-app.use(express.json({ limit: '2mb' }));
+app.use(express.json({
+  limit: '2mb',
+  verify(req, _res, buf) {
+    const target = req.path || req.originalUrl || '';
+    if (target.startsWith('/api/webhooks/paddle')) {
+      req.rawBody = buf.toString('utf8');
+    }
+  },
+}));
 app.use((req, res, next) => {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
@@ -210,6 +237,28 @@ app.use((req, res, next) => {
   const startedAt = Date.now();
   res.on('finish', () => {
     const userId = req.authUser?.id || '';
+    const body = req.body && typeof req.body === 'object' && !Buffer.isBuffer(req.body)
+      ? req.body
+      : {};
+    const jobId = sanitizeText(
+      req.jobId
+      || req.params?.jobId
+      || body.jobId
+      || req.query?.jobId
+      || req.query?.repairJobId
+      || '',
+      120
+    );
+    const paymentSessionId = sanitizeText(
+      req.paymentSessionId
+      || req.checkoutSessionId
+      || body.sessionId
+      || body.transactionId
+      || body.checkoutId
+      || req.paddleWebhook?.transactionId
+      || '',
+      120
+    );
     const line = {
       level: res.statusCode >= 500 ? 'error' : (res.statusCode >= 400 ? 'warn' : 'info'),
       at: nowIso(),
@@ -219,6 +268,8 @@ app.use((req, res, next) => {
       status: res.statusCode,
       durationMs: Date.now() - startedAt,
       userId,
+      jobId,
+      paymentSessionId,
       ip: req.ip,
     };
     // eslint-disable-next-line no-console
@@ -239,6 +290,8 @@ const refreshTokens = new Map();
 const subscriptionsByUser = new Map();
 const usageByUserMonth = new Map();
 const paymentEventsByUser = new Map();
+const processedWebhookEvents = new Map();
+const analyticsEvents = [];
 const rateLimitWindows = new Map();
 const anonTrialByFingerprint = new Map();
 const anonTrialByIp = new Map();
@@ -473,6 +526,8 @@ function persistPlatformState() {
       usageByUserMonth: [...usageByUserMonth.values()],
       anonUsageByMonth: [...anonUsageByMonth.values()],
       paymentEventsByUser: [...paymentEventsByUser.entries()],
+      processedWebhookEvents: [...processedWebhookEvents.entries()],
+      analyticsEvents: [...analyticsEvents],
       anonTrialByFingerprint: [...anonTrialByFingerprint.entries()],
       anonTrialByIp: [...anonTrialByIp.entries()],
       anonTrialTickets: [...anonTrialTickets.entries()],
@@ -540,6 +595,29 @@ function loadPlatformState() {
     for (const item of paymentEntries) {
       if (!Array.isArray(item) || item.length !== 2) continue;
       paymentEventsByUser.set(item[0], Array.isArray(item[1]) ? item[1] : []);
+    }
+    const webhookEntries = Array.isArray(parsed.processedWebhookEvents) ? parsed.processedWebhookEvents : [];
+    for (const item of webhookEntries) {
+      if (!Array.isArray(item) || item.length !== 2) continue;
+      const eventId = sanitizeText(item[0], 120);
+      const ts = Number(item[1]) || 0;
+      if (!eventId || !ts) continue;
+      processedWebhookEvents.set(eventId, ts);
+    }
+    const analytics = Array.isArray(parsed.analyticsEvents) ? parsed.analyticsEvents : [];
+    for (const item of analytics.slice(-MAX_ANALYTICS_EVENTS)) {
+      const event = sanitizeText(item?.event, 60);
+      if (!event || !FUNNEL_EVENTS.has(event)) continue;
+      analyticsEvents.push({
+        id: sanitizeText(item?.id, 120) || randomUUID(),
+        at: sanitizeText(item?.at, 80) || nowIso(),
+        day: sanitizeText(item?.day, 20) || `${monthKey()}-01`,
+        event,
+        userId: sanitizeText(item?.userId, 80),
+        requestId: sanitizeText(item?.requestId, 120),
+        ip: sanitizeText(item?.ip, 200),
+        props: item?.props && typeof item.props === 'object' ? item.props : {},
+      });
     }
     const anonByFp = Array.isArray(parsed.anonTrialByFingerprint) ? parsed.anonTrialByFingerprint : [];
     for (const item of anonByFp) {
@@ -636,6 +714,192 @@ function appendPaymentEvent(userId, event) {
   });
   paymentEventsByUser.set(userId, list.slice(0, 200));
   schedulePersistUsers();
+}
+
+function appendAnalyticsEvent(req, eventName, props = {}) {
+  if (!FUNNEL_EVENTS.has(eventName)) return;
+  const fallbackUserId = sanitizeText(props?.userId || '', 80);
+  const cleanProps = {};
+  for (const [k, v] of Object.entries(props || {})) {
+    const key = sanitizeText(k, 50);
+    if (!key) continue;
+    if (typeof v === 'number') {
+      cleanProps[key] = Number.isFinite(v) ? v : 0;
+      continue;
+    }
+    cleanProps[key] = sanitizeText(String(v || ''), 200);
+  }
+  analyticsEvents.push({
+    id: randomUUID(),
+    at: nowIso(),
+    day: nowIso().slice(0, 10),
+    event: eventName,
+    userId: req?.authUser?.id || fallbackUserId,
+    requestId: req?.requestId || '',
+    ip: getClientIp(req),
+    props: cleanProps,
+  });
+  if (analyticsEvents.length > MAX_ANALYTICS_EVENTS) {
+    analyticsEvents.splice(0, analyticsEvents.length - MAX_ANALYTICS_EVENTS);
+  }
+  schedulePersistUsers();
+}
+
+function getPaddleApiBaseUrl() {
+  return PADDLE_ENV === 'live'
+    ? 'https://api.paddle.com'
+    : 'https://sandbox-api.paddle.com';
+}
+
+function inferCheckoutCurrency(req) {
+  const countryRaw = sanitizeText(
+    req.headers['x-vercel-ip-country']
+    || req.headers['cf-ipcountry']
+    || '',
+    8
+  );
+  const country = countryRaw.toUpperCase();
+  if (country === 'CN') return 'CNY';
+  return 'USD';
+}
+
+function getPaddlePriceIdByCurrency(currency) {
+  if (currency === 'CNY') return PADDLE_PRICE_ID_CNY;
+  return PADDLE_PRICE_ID_USD;
+}
+
+function ensurePaddleCheckoutConfigured(currency) {
+  if (!PADDLE_API_KEY) {
+    const err = new Error('Paddle API Key 未配置');
+    err.code = 'payment_not_configured';
+    throw err;
+  }
+  const priceId = getPaddlePriceIdByCurrency(currency);
+  if (!priceId) {
+    const err = new Error(`Paddle Price ID 未配置（${currency}）`);
+    err.code = 'payment_not_configured';
+    throw err;
+  }
+  if (!PADDLE_SUCCESS_URL || !PADDLE_CANCEL_URL) {
+    const err = new Error('Paddle 成功/取消回跳地址未配置');
+    err.code = 'payment_not_configured';
+    throw err;
+  }
+}
+
+async function createPaddleCheckoutSession({ req, user, planId, cycle }) {
+  const currency = inferCheckoutCurrency(req);
+  ensurePaddleCheckoutConfigured(currency);
+  const priceId = getPaddlePriceIdByCurrency(currency);
+  const body = {
+    items: [{ price_id: priceId, quantity: 1 }],
+    customer_email: user?.email || undefined,
+    custom_data: {
+      userId: user.id,
+      planId,
+      cycle,
+      currency,
+      requestId: req.requestId || '',
+    },
+    checkout: {
+      success_url: PADDLE_SUCCESS_URL,
+      cancel_url: PADDLE_CANCEL_URL,
+      locale: PADDLE_CHECKOUT_LOCALE,
+    },
+  };
+
+  const resp = await fetch(`${getPaddleApiBaseUrl()}/transactions`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${PADDLE_API_KEY}`,
+    },
+    body: JSON.stringify(body),
+  });
+  const text = await resp.text();
+  let data = null;
+  try {
+    data = text ? JSON.parse(text) : null;
+  } catch {
+    data = null;
+  }
+  if (!resp.ok) {
+    const detail = sanitizeText(
+      data?.error?.detail
+      || data?.error?.code
+      || resp.statusText
+      || text
+      || '未知错误',
+      240
+    );
+    const err = new Error(`Paddle 创建结账会话失败：${detail}`);
+    err.code = 'checkout_create_failed';
+    throw err;
+  }
+  const checkoutUrl = sanitizeText(data?.data?.checkout?.url || '', 600);
+  const transactionId = sanitizeText(data?.data?.id || '', 120);
+  if (!checkoutUrl) {
+    const err = new Error('Paddle 返回缺少 checkout.url');
+    err.code = 'checkout_create_failed';
+    throw err;
+  }
+  return { checkoutUrl, transactionId, currency, provider: 'paddle' };
+}
+
+function cleanupProcessedWebhookEvents() {
+  const now = Date.now();
+  for (const [eventId, ts] of processedWebhookEvents.entries()) {
+    if (!ts || now - Number(ts) > WEBHOOK_EVENT_TTL_MS) {
+      processedWebhookEvents.delete(eventId);
+    }
+  }
+}
+
+function isWebhookEventProcessed(eventId) {
+  cleanupProcessedWebhookEvents();
+  return processedWebhookEvents.has(eventId);
+}
+
+function markWebhookEventProcessed(eventId) {
+  if (!eventId) return;
+  processedWebhookEvents.set(eventId, Date.now());
+  cleanupProcessedWebhookEvents();
+  schedulePersistUsers();
+}
+
+function parsePaddleSignatureHeader(headerValue) {
+  const raw = String(headerValue || '').trim();
+  if (!raw) return { ts: '', h1: '' };
+  const items = raw.split(/[;,]/).map((item) => item.trim()).filter(Boolean);
+  let ts = '';
+  let h1 = '';
+  for (const item of items) {
+    const [k, v] = item.split('=', 2);
+    if (!k || !v) continue;
+    if (k === 'ts') ts = v;
+    if (k === 'h1') h1 = v;
+  }
+  return { ts, h1 };
+}
+
+function verifyPaddleWebhookSignature(req) {
+  if (!PADDLE_WEBHOOK_SECRET) {
+    const err = new Error('Paddle Webhook Secret 未配置');
+    err.code = 'payment_not_configured';
+    throw err;
+  }
+  const signatureHeader = req.headers['paddle-signature'];
+  const { ts, h1 } = parsePaddleSignatureHeader(signatureHeader);
+  const rawBody = typeof req.rawBody === 'string' ? req.rawBody : '';
+  if (!ts || !h1 || !rawBody) return false;
+  const signed = `${ts}:${rawBody}`;
+  const expected = createHmac('sha256', PADDLE_WEBHOOK_SECRET).update(signed).digest('hex');
+  const a = Buffer.from(h1);
+  const b = Buffer.from(expected);
+  if (a.length !== b.length) return false;
+  const withinTolerance = Math.abs(Date.now() - Number(ts) * 1000) <= 5 * 60 * 1000;
+  if (!withinTolerance) return false;
+  return timingSafeEqual(a, b);
 }
 
 function buildPlanResponse(userId) {
@@ -2431,6 +2695,28 @@ app.get('/api/usage', requireAuth, asyncRoute(async (req, res) => {
   });
 }));
 
+app.post('/api/events', attachOptionalAuth, asyncRoute(async (req, res) => {
+  res.set(jsonHeader);
+  const eventName = sanitizeText(req.body?.event, 60);
+  if (!eventName || !FUNNEL_EVENTS.has(eventName)) {
+    return res.status(400).json({ success: false, message: '无效事件名' });
+  }
+  appendAnalyticsEvent(req, eventName, req.body?.props);
+  return res.json({ success: true });
+}));
+
+app.get('/api/events/funnel', requireAuth, asyncRoute(async (req, res) => {
+  res.set(jsonHeader);
+  const day = sanitizeText(req.query?.day, 20) || nowIso().slice(0, 10);
+  const counts = Object.fromEntries([...FUNNEL_EVENTS].map((name) => [name, 0]));
+  for (const item of analyticsEvents) {
+    if (item?.day !== day) continue;
+    if (!FUNNEL_EVENTS.has(item.event)) continue;
+    counts[item.event] += 1;
+  }
+  return res.json({ success: true, day, counts });
+}));
+
 app.get('/api/billing/plans', requireAuth, asyncRoute(async (req, res) => {
   res.set(jsonHeader);
   const plans = Object.values(PLANS).map((item) => ({
@@ -2451,6 +2737,18 @@ app.get('/api/billing/subscription', requireAuth, asyncRoute(async (req, res) =>
 
 app.post('/api/billing/subscription', requireAuth, asyncRoute(async (req, res) => {
   res.set(jsonHeader);
+  return res.status(410).json({
+    success: false,
+    code: 'manual_subscription_disabled',
+    message: '已停用手动订阅变更，请通过 /api/subscription/checkout 下单并等待 Paddle Webhook 同步。',
+  });
+}));
+
+app.post('/api/billing/subscription/manual', requireAuth, asyncRoute(async (req, res) => {
+  res.set(jsonHeader);
+  if (APP_ENV_PROFILE === 'prod') {
+    return res.status(403).json({ success: false, message: '生产环境不允许手动改订阅状态' });
+  }
   const planId = sanitizeText(req.body?.planId, 30).toLowerCase();
   const cycle = 'monthly';
   if (!PLANS[planId]) {
@@ -2483,7 +2781,7 @@ app.post('/api/billing/subscription', requireAuth, asyncRoute(async (req, res) =
 
 app.post('/api/billing/checkout-session', requireAuth, asyncRoute(async (req, res) => {
   res.set(jsonHeader);
-  const provider = sanitizeText(req.body?.provider, 30).toLowerCase();
+  const provider = sanitizeText(req.body?.provider, 30).toLowerCase() || 'paddle';
   const planId = sanitizeText(req.body?.planId, 30).toLowerCase();
   const cycle = sanitizeText(req.body?.cycle, 30).toLowerCase() || 'monthly';
   if (!SUPPORTED_PAYMENT_PROVIDERS.has(provider)) {
@@ -2492,66 +2790,106 @@ app.post('/api/billing/checkout-session', requireAuth, asyncRoute(async (req, re
   if (!PLANS[planId] || !PLANS[planId].cycle.includes(cycle)) {
     return res.status(400).json({ success: false, message: '套餐或周期无效' });
   }
-  if (!PAYMENT_CHECKOUT_BASE_URL) {
-    return res.status(503).json({
+  const user = usersById.get(req.authUser.id);
+  if (!user) {
+    return res.status(401).json({ success: false, message: '用户不存在，请重新登录' });
+  }
+  let session;
+  try {
+    session = await createPaddleCheckoutSession({
+      req,
+      user,
+      planId,
+      cycle,
+    });
+  } catch (error) {
+    return res.status(error?.code === 'payment_not_configured' ? 503 : 502).json({
       success: false,
-      code: 'payment_not_configured',
-      message: '支付未配置，当前环境不能创建收银台链接',
+      code: error?.code || 'checkout_create_failed',
+      message: error?.message || '支付会话创建失败',
     });
   }
-  const sessionId = randomUUID();
   appendPaymentEvent(req.authUser.id, {
-    provider,
+    provider: 'paddle',
     type: 'checkout_session_created',
     planId,
     cycle,
     status: 'pending',
-    sessionId,
+    sessionId: session.transactionId || randomUUID(),
+    paymentSessionId: session.transactionId || '',
+    currency: session.currency,
     amountCny: PLANS[planId].priceCny[cycle] || 0,
     amountUsd: PLANS[planId].priceUsd[cycle] || 0,
   });
+  req.paymentSessionId = session.transactionId || '';
+  appendAnalyticsEvent(req, 'checkout_start', {
+    planId,
+    cycle,
+    provider: 'paddle',
+    currency: session.currency,
+  });
   return res.json({
     success: true,
-    sessionId,
-    provider,
-    checkoutUrl: `${PAYMENT_CHECKOUT_BASE_URL}/${provider}/checkout/${sessionId}`,
+    sessionId: session.transactionId || '',
+    provider: 'paddle',
+    checkoutUrl: session.checkoutUrl,
     message: '已创建支付会话',
   });
 }));
 
 app.post('/api/subscription/checkout', requireAuth, asyncRoute(async (req, res) => {
   res.set(jsonHeader);
-  const provider = sanitizeText(req.body?.provider, 30).toLowerCase() || 'stripe';
+  const provider = sanitizeText(req.body?.provider, 30).toLowerCase() || 'paddle';
   const planId = 'pro';
   const cycle = 'monthly';
   if (!SUPPORTED_PAYMENT_PROVIDERS.has(provider)) {
     return res.status(400).json({ success: false, code: 'invalid_provider', message: '不支持的支付通道' });
   }
-  if (!PAYMENT_CHECKOUT_BASE_URL) {
-    return res.status(503).json({
+  const user = usersById.get(req.authUser.id);
+  if (!user) {
+    return res.status(401).json({ success: false, message: '用户不存在，请重新登录' });
+  }
+  let session;
+  try {
+    session = await createPaddleCheckoutSession({
+      req,
+      user,
+      planId,
+      cycle,
+    });
+  } catch (error) {
+    return res.status(error?.code === 'payment_not_configured' ? 503 : 502).json({
       success: false,
-      code: 'payment_not_configured',
-      message: '支付未配置，当前环境不能创建收银台链接',
+      code: error?.code || 'checkout_create_failed',
+      message: error?.message || '支付会话创建失败',
     });
   }
-  const sessionId = randomUUID();
   appendPaymentEvent(req.authUser.id, {
-    provider,
+    provider: 'paddle',
     type: 'subscription_checkout_created',
     planId,
     cycle,
     status: 'pending',
-    sessionId,
+    sessionId: session.transactionId || randomUUID(),
+    paymentSessionId: session.transactionId || '',
+    currency: session.currency,
     amountCny: PLANS[planId].priceCny[cycle] || 0,
     amountUsd: PLANS[planId].priceUsd[cycle] || 0,
   });
-  return res.json({
-    success: true,
-    sessionId,
-    provider,
+  req.paymentSessionId = session.transactionId || '';
+  appendAnalyticsEvent(req, 'checkout_start', {
     planId,
     cycle,
-    checkoutUrl: `${PAYMENT_CHECKOUT_BASE_URL}/${provider}/checkout/${sessionId}`,
+    provider: 'paddle',
+    currency: session.currency,
+  });
+  return res.json({
+    success: true,
+    sessionId: session.transactionId || '',
+    provider: 'paddle',
+    planId,
+    cycle,
+    checkoutUrl: session.checkoutUrl,
     message: '月订阅结账会话已创建',
   });
 }));
@@ -2562,17 +2900,32 @@ app.get('/api/billing/invoices', requireAuth, asyncRoute(async (req, res) => {
   return res.json({ success: true, invoices: items });
 }));
 
-function applyWebhookSubscriptionUpdate(userId, planId, cycle, provider, status) {
+function applyWebhookSubscriptionUpdate(userId, planId, cycle, provider, status, extra = {}) {
   if (!usersById.has(userId)) return;
-  const normalizedStatus = status === 'failed' ? 'past_due' : (status === 'canceled' ? 'canceled' : 'active');
+  const statusText = sanitizeText(status || '', 40).toLowerCase();
+  let normalizedStatus = 'active';
+  if (statusText === 'failed' || statusText === 'past_due' || statusText === 'paused') normalizedStatus = 'past_due';
+  if (statusText === 'canceled' || statusText === 'cancelled') normalizedStatus = 'canceled';
+  if (statusText === 'none' || statusText === 'free') normalizedStatus = 'none';
+  const resolvedPlanId = PLANS[planId] ? planId : (normalizedStatus === 'active' ? 'pro' : 'free');
+  const renewAt = sanitizeText(extra.renewAt || '', 120) || nowIso();
+  const providerSubscriptionId = sanitizeText(extra.providerSubscriptionId || '', 120);
+  const providerCustomerId = sanitizeText(extra.providerCustomerId || '', 120);
+  const paymentSessionId = sanitizeText(extra.paymentSessionId || '', 120);
+  const lastWebhookEventId = sanitizeText(extra.webhookEventId || '', 120);
   const sub = {
     userId,
-    planId: PLANS[planId] ? planId : 'free',
+    planId: resolvedPlanId,
     cycle: cycle || 'monthly',
     status: normalizedStatus,
-    renewAt: nowIso(),
+    renewAt,
     startedAt: subscriptionsByUser.get(userId)?.startedAt || nowIso(),
     updatedAt: nowIso(),
+    provider: provider || 'paddle',
+    providerSubscriptionId,
+    providerCustomerId,
+    paymentSessionId,
+    lastWebhookEventId,
   };
   subscriptionsByUser.set(userId, sub);
   appendPaymentEvent(userId, {
@@ -2581,37 +2934,142 @@ function applyWebhookSubscriptionUpdate(userId, planId, cycle, provider, status)
     planId: sub.planId,
     cycle: sub.cycle,
     status,
+    paymentSessionId,
+    providerSubscriptionId,
+    webhookEventId: lastWebhookEventId,
   });
+  schedulePersistUsers();
 }
+
+function normalizePaddleWebhookStatus(eventType, dataStatus) {
+  const type = sanitizeText(eventType || '', 120).toLowerCase();
+  const status = sanitizeText(dataStatus || '', 40).toLowerCase();
+  if (type === 'subscription.canceled' || type === 'subscription.cancelled') return 'canceled';
+  if (type === 'subscription.past_due' || type === 'subscription.payment_failed') return 'past_due';
+  if (status) return status;
+  if (type === 'transaction.completed' || type === 'subscription.created' || type === 'subscription.activated') return 'active';
+  return 'active';
+}
+
+function getPaddleCustomData(data) {
+  const customData = data?.custom_data;
+  if (customData && typeof customData === 'object') return customData;
+  const detailsCustom = data?.details?.custom_data;
+  if (detailsCustom && typeof detailsCustom === 'object') return detailsCustom;
+  return {};
+}
+
+function resolvePaddleWebhookPayload(payload) {
+  const eventId = sanitizeText(payload?.event_id || payload?.eventId, 120);
+  const eventType = sanitizeText(payload?.event_type || payload?.eventType, 120).toLowerCase();
+  const data = payload?.data && typeof payload.data === 'object' ? payload.data : {};
+  const customData = getPaddleCustomData(data);
+  const userId = sanitizeText(
+    customData?.userId
+    || customData?.user_id
+    || data?.customer?.custom_data?.userId
+    || data?.customer?.custom_data?.user_id
+    || '',
+    80
+  );
+  const planId = sanitizeText(customData?.planId || customData?.plan_id || 'pro', 30).toLowerCase() || 'pro';
+  const cycle = sanitizeText(customData?.cycle || 'monthly', 30).toLowerCase() || 'monthly';
+  const paymentSessionId = sanitizeText(
+    data?.transaction_id
+    || data?.id
+    || data?.order_id
+    || '',
+    120
+  );
+  const providerSubscriptionId = sanitizeText(
+    data?.subscription_id
+    || (eventType.startsWith('subscription.') ? data?.id : '')
+    || '',
+    120
+  );
+  const providerCustomerId = sanitizeText(
+    data?.customer_id
+    || data?.customer?.id
+    || '',
+    120
+  );
+  const renewAt = sanitizeText(
+    data?.next_billed_at
+    || data?.current_billing_period?.ends_at
+    || '',
+    120
+  ) || nowIso();
+  const status = normalizePaddleWebhookStatus(eventType, data?.status || data?.subscription_status);
+  return {
+    eventId,
+    eventType,
+    userId,
+    planId,
+    cycle,
+    status,
+    paymentSessionId,
+    providerSubscriptionId,
+    providerCustomerId,
+    renewAt,
+  };
+}
+
+app.post('/api/webhooks/paddle', asyncRoute(async (req, res) => {
+  res.set(jsonHeader);
+  if (!verifyPaddleWebhookSignature(req)) {
+    return res.status(401).json({ success: false, message: 'Webhook 签名验证失败' });
+  }
+  const payload = req.body && typeof req.body === 'object' ? req.body : {};
+  const event = resolvePaddleWebhookPayload(payload);
+  req.paddleWebhook = { transactionId: event.paymentSessionId };
+  req.paymentSessionId = event.paymentSessionId;
+  if (!event.eventId) {
+    return res.status(400).json({ success: false, message: '缺少 event_id' });
+  }
+  if (isWebhookEventProcessed(event.eventId)) {
+    return res.json({ success: true, received: true, duplicate: true });
+  }
+  if (event.userId) {
+    applyWebhookSubscriptionUpdate(
+      event.userId,
+      event.planId,
+      event.cycle,
+      'paddle',
+      event.status,
+      {
+        renewAt: event.renewAt,
+        paymentSessionId: event.paymentSessionId,
+        providerSubscriptionId: event.providerSubscriptionId,
+        providerCustomerId: event.providerCustomerId,
+        webhookEventId: event.eventId,
+      }
+    );
+    if (event.status === 'active' || event.eventType === 'transaction.completed' || event.eventType === 'subscription.activated') {
+      appendAnalyticsEvent(req, 'checkout_success', {
+        userId: event.userId,
+        provider: 'paddle',
+        planId: event.planId,
+        paymentSessionId: event.paymentSessionId,
+      });
+    }
+  }
+  markWebhookEventProcessed(event.eventId);
+  return res.json({ success: true, received: true });
+}));
 
 app.post('/api/webhooks/stripe', asyncRoute(async (req, res) => {
   res.set(jsonHeader);
-  const userId = sanitizeText(req.body?.metadata?.userId || req.body?.userId, 80);
-  const planId = sanitizeText(req.body?.metadata?.planId || req.body?.planId, 30).toLowerCase();
-  const cycle = sanitizeText(req.body?.metadata?.cycle || req.body?.cycle, 30).toLowerCase();
-  const status = sanitizeText(req.body?.status, 30).toLowerCase() || 'succeeded';
-  if (userId) applyWebhookSubscriptionUpdate(userId, planId || 'free', cycle || 'monthly', 'stripe', status);
-  return res.json({ success: true, received: true });
+  return res.status(410).json({ success: false, message: 'Stripe Webhook 已停用，请改用 /api/webhooks/paddle' });
 }));
 
 app.post('/api/webhooks/wechatpay', asyncRoute(async (req, res) => {
   res.set(jsonHeader);
-  const userId = sanitizeText(req.body?.attach?.userId || req.body?.userId, 80);
-  const planId = sanitizeText(req.body?.attach?.planId || req.body?.planId, 30).toLowerCase();
-  const cycle = sanitizeText(req.body?.attach?.cycle || req.body?.cycle, 30).toLowerCase();
-  const status = sanitizeText(req.body?.trade_state || req.body?.status, 30).toLowerCase() || 'succeeded';
-  if (userId) applyWebhookSubscriptionUpdate(userId, planId || 'free', cycle || 'monthly', 'wechatpay', status);
-  return res.json({ success: true, received: true });
+  return res.status(410).json({ success: false, message: '微信支付 Webhook 已停用，请改用 /api/webhooks/paddle' });
 }));
 
 app.post('/api/webhooks/alipay', asyncRoute(async (req, res) => {
   res.set(jsonHeader);
-  const userId = sanitizeText(req.body?.passback_params?.userId || req.body?.userId, 80);
-  const planId = sanitizeText(req.body?.passback_params?.planId || req.body?.planId, 30).toLowerCase();
-  const cycle = sanitizeText(req.body?.passback_params?.cycle || req.body?.cycle, 30).toLowerCase();
-  const status = sanitizeText(req.body?.trade_status || req.body?.status, 30).toLowerCase() || 'succeeded';
-  if (userId) applyWebhookSubscriptionUpdate(userId, planId || 'free', cycle || 'monthly', 'alipay', status);
-  return res.json({ success: true, received: true });
+  return res.status(410).json({ success: false, message: '支付宝 Webhook 已停用，请改用 /api/webhooks/paddle' });
 }));
 
 app.get('/', (req, res) => {
@@ -2635,6 +3093,8 @@ app.get('/api/health', (req, res) => {
     modelV3: MODEL_V3,
     modelR1: MODEL_R1,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
+    paddleEnv: PADDLE_ENV,
+    paddleConfigured: Boolean(PADDLE_API_KEY && PADDLE_WEBHOOK_SECRET && PADDLE_PRICE_ID_CNY && PADDLE_PRICE_ID_USD && PADDLE_SUCCESS_URL && PADDLE_CANCEL_URL),
     queueLength: generationQueue.length,
     reviseConsistencyQueueLength: reviseConsistencyQueue.length,
     users: usersById.size,
@@ -2644,8 +3104,17 @@ app.get('/api/health', (req, res) => {
 app.get('/api/ready', (req, res) => {
   res.set(jsonHeader);
   const key = (process.env.LLM_API_KEY || '').trim();
+  const paddleConfigured = Boolean(
+    PADDLE_API_KEY
+    && PADDLE_WEBHOOK_SECRET
+    && PADDLE_PRICE_ID_CNY
+    && PADDLE_PRICE_ID_USD
+    && PADDLE_SUCCESS_URL
+    && PADDLE_CANCEL_URL
+  );
   const checks = {
     llmKeyLoaded: Boolean(key && key.startsWith('sk-')),
+    paddleConfigured,
     userStoreWritable: true,
     jobStoreWritable: true,
   };
@@ -2661,7 +3130,11 @@ app.get('/api/ready', (req, res) => {
   } catch {
     checks.jobStoreWritable = false;
   }
-  const ready = checks.llmKeyLoaded && checks.userStoreWritable && checks.jobStoreWritable;
+  const mustCheckPaddle = APP_ENV_PROFILE === 'prod';
+  const ready = checks.llmKeyLoaded
+    && checks.userStoreWritable
+    && checks.jobStoreWritable
+    && (mustCheckPaddle ? checks.paddleConfigured : true);
   return res.status(ready ? 200 : 503).json({ success: ready, checks });
 });
 
@@ -2761,6 +3234,7 @@ app.post('/api/document/generate', attachOptionalAuth, attachPlanInfo, asyncRout
     answers,
     scenario,
   });
+  req.jobId = job.id;
   const planInfo = resolveRequestPlanInfo(req);
   return res.status(202).json({
     success: true,
@@ -3168,6 +3642,10 @@ app.post('/api/document/export', requireAuth, attachPlanInfo, asyncRoute(async (
       entitlements: req.planInfo?.entitlements,
     });
   }
+  appendAnalyticsEvent(req, 'export_success', {
+    plan: req.planInfo?.plan || 'free',
+    docChars: document.length,
+  });
   return res.json({
     success: true,
     title,
@@ -3213,6 +3691,15 @@ if (!JWT_SECRET || JWT_SECRET === 'change-this-secret-in-prod') {
 }
 if (SENTRY_DSN) {
   console.log('SENTRY_DSN 已配置（当前版本仅输出结构化错误日志，建议接入 SDK）。');
+}
+if (!PADDLE_API_KEY || !PADDLE_WEBHOOK_SECRET) {
+  console.warn('Paddle 支付关键配置缺失（PADDLE_API_KEY / PADDLE_WEBHOOK_SECRET）。');
+}
+if (!PADDLE_PRICE_ID_CNY || !PADDLE_PRICE_ID_USD) {
+  console.warn('Paddle 价格 ID 未完整配置（PADDLE_PRICE_ID_CNY / PADDLE_PRICE_ID_USD）。');
+}
+if (!PADDLE_SUCCESS_URL || !PADDLE_CANCEL_URL) {
+  console.warn('Paddle 回跳地址未配置（PADDLE_SUCCESS_URL / PADDLE_CANCEL_URL）。');
 }
 
 loadPlatformState();

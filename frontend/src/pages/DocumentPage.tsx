@@ -4,10 +4,12 @@ import {
   createReviseRepairJob,
   createSubscriptionCheckout,
   exportDocument,
+  trackEvent,
   reviseDocument,
   getReviseConsistencyJobStatus,
   retryReviseConsistencyJob,
   applyReviseConsistencyJob,
+  getSubscription,
 } from '../services/api';
 import type { Annotation, AnnotationType, AnnotationAnchorPolicy } from '../types';
 import { DocumentView } from '../components/DocumentView';
@@ -43,6 +45,7 @@ export function DocumentPage({
 }: DocumentPageProps) {
   const pollingJobRef = useRef('');
   const lastProcessedExportSignalRef = useRef(0);
+  const checkoutPollTimerRef = useRef<number | null>(null);
   const [document, setDocument] = useState(initialDocument);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [revising, setRevising] = useState(false);
@@ -77,7 +80,7 @@ export function DocumentPage({
   const [startingRepair, setStartingRepair] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [showExportPaywall, setShowExportPaywall] = useState(false);
-  const [exportPaywallMessage, setExportPaywallMessage] = useState('免费档暂不支持下载，请开通订阅后导出。');
+  const [exportPaywallMessage, setExportPaywallMessage] = useState('免费额度已用尽，请开通订阅后导出。');
   const [displayConsistencyRemainingMs, setDisplayConsistencyRemainingMs] = useState(0);
 
   const persistConsistencyJob = useCallback((jobId: string) => {
@@ -334,6 +337,7 @@ export function DocumentPage({
     setExporting(true);
     try {
       const title = `需求Markdown-${userRequirement.slice(0, 20)}`;
+      trackEvent('click_export', { source: 'document_page' }).catch(() => undefined);
       const res = await exportDocument(document, title);
       if (!res.success || !res.document) {
         throw new Error(res.message || '导出失败');
@@ -364,7 +368,7 @@ export function DocumentPage({
         || (error instanceof Error && (error.message.includes('subscription_required') || error.message.includes('月订阅')))
       ) {
         setShowExportPaywall(true);
-        setExportPaywallMessage('免费档暂不支持下载，请开通订阅后导出。');
+        setExportPaywallMessage('免费额度已用尽，请开通订阅后导出。');
         setConsistencyNotice('');
         return;
       }
@@ -374,18 +378,54 @@ export function DocumentPage({
     }
   }, [document, exporting, onRequireAuthForExport, userRequirement]);
 
+  const stopCheckoutPolling = useCallback(() => {
+    if (checkoutPollTimerRef.current !== null) {
+      window.clearInterval(checkoutPollTimerRef.current);
+      checkoutPollTimerRef.current = null;
+    }
+  }, []);
+
+  const startCheckoutPolling = useCallback(() => {
+    stopCheckoutPolling();
+    let rounds = 0;
+    checkoutPollTimerRef.current = window.setInterval(async () => {
+      rounds += 1;
+      try {
+        const sub = await getSubscription();
+        if (sub.subscription?.status === 'active') {
+          stopCheckoutPolling();
+          setShowExportPaywall(false);
+          setConsistencyNotice('订阅已生效，正在继续导出…');
+          handleExport().catch(() => undefined);
+          return;
+        }
+      } catch {
+        // ignore transient polling errors
+      }
+      if (rounds >= 240) {
+        stopCheckoutPolling();
+      }
+    }, 5000);
+  }, [handleExport, stopCheckoutPolling]);
+
   const handleOpenCheckout = useCallback(async () => {
     try {
-      const checkout = await createSubscriptionCheckout('stripe');
+      const checkout = await createSubscriptionCheckout('paddle');
       if (checkout.checkoutUrl) {
         window.open(checkout.checkoutUrl, '_blank');
+        setConsistencyNotice('已打开支付页，支付成功后将自动继续导出。');
+        startCheckoutPolling();
       } else {
         setConsistencyNotice(checkout.message || '支付未配置，暂不可开通订阅。');
       }
     } catch (e) {
       setConsistencyNotice(e instanceof Error ? e.message : '创建订阅会话失败，请稍后重试。');
     }
-  }, []);
+  }, [startCheckoutPolling]);
+
+  useEffect(() => () => {
+    stopCheckoutPolling();
+  }, [stopCheckoutPolling]);
 
   useEffect(() => {
     if (!exportAfterAuthSignal) return;
@@ -609,7 +649,13 @@ export function DocumentPage({
               {exportPaywallMessage}
             </p>
             <div style={{ display: 'flex', gap: 10, justifyContent: 'flex-end', flexWrap: 'wrap' }}>
-              <button className="btn-secondary" onClick={() => setShowExportPaywall(false)}>
+              <button
+                className="btn-secondary"
+                onClick={() => {
+                  stopCheckoutPolling();
+                  setShowExportPaywall(false);
+                }}
+              >
                 稍后再说
               </button>
               <button
@@ -621,6 +667,19 @@ export function DocumentPage({
                 去支付开通
               </button>
             </div>
+            <p style={{ marginTop: 12, marginBottom: 0, color: '#8fa4c1', fontSize: 12, lineHeight: 1.6 }}>
+              继续即表示同意
+              {' '}
+              <a href="/legal/terms.html" target="_blank" rel="noreferrer">用户协议</a>
+              {' '}
+              /
+              {' '}
+              <a href="/legal/privacy.html" target="_blank" rel="noreferrer">隐私政策</a>
+              {' '}
+              /
+              {' '}
+              <a href="/legal/refund.html" target="_blank" rel="noreferrer">退款说明</a>
+            </p>
           </div>
         </div>
       )}

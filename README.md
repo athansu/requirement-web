@@ -66,7 +66,12 @@ npm start
 
 - `ACCESS_TOKEN_TTL_MS` / `REFRESH_TOKEN_TTL_MS`
 - `ANON_QUOTA_ENFORCED`（`dev/test` 建议 `0`，`prod` 建议 `1`）
-- `PAYMENT_CHECKOUT_BASE_URL`
+- `PADDLE_ENV`（`sandbox` 或 `live`）
+- `PADDLE_API_KEY`
+- `PADDLE_WEBHOOK_SECRET`
+- `PADDLE_PRICE_ID_CNY`
+- `PADDLE_PRICE_ID_USD`
+- `PADDLE_SUCCESS_URL` / `PADDLE_CANCEL_URL`
 - `SENTRY_DSN`（可选）
 
 前端可选环境变量（Vercel）：
@@ -85,8 +90,9 @@ npm start
 - 匿名试用：`POST /api/trial/claim`、`POST /api/trial/generate`
 - 计费：`GET /api/billing/plans|subscription|invoices`、`POST /api/billing/subscription|checkout-session`
 - 月订阅快捷下单：`POST /api/subscription/checkout`
-- 支付回调占位：`POST /api/webhooks/stripe|wechatpay|alipay`
+- 支付回调：`POST /api/webhooks/paddle`
 - 用量：`GET /api/usage`
+- 漏斗事件：`POST /api/events`、`GET /api/events/funnel`
 - 健康检查：`GET /api/health`、`GET /api/ready`
 
 说明：现有 `generate/revise` 接口已接入鉴权与月配额校验，并返回 `plan`、`quotaRemaining`、`entitlements` 字段；下载接口 `POST /api/document/export` 需月订阅。

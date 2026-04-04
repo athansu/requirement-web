@@ -5,6 +5,7 @@ import {
   generateDocument,
   getGenerateJobStatus,
   retryGenerateJobStage,
+  trackEvent,
 } from '../services/api';
 
 const FALLBACK_QUESTIONS = [
@@ -322,6 +323,7 @@ function readHomeState(): PersistedHomeState {
 export function Home({ onGenerate }: HomeProps) {
   const initialState = readHomeState();
   const pollingJobRef = useRef('');
+  const visitTrackedRef = useRef(false);
   const [input, setInput] = useState(initialState.input);
   const [step, setStep] = useState<Step>(initialState.step);
   const [questions, setQuestions] = useState<string[]>(initialState.questions);
@@ -352,6 +354,12 @@ export function Home({ onGenerate }: HomeProps) {
   const [completionScore, setCompletionScore] = useState(initialState.completionScore);
   const [qualityWarnings, setQualityWarnings] = useState<string[]>(initialState.qualityWarnings);
   const requirement = input.trim();
+
+  useEffect(() => {
+    if (visitTrackedRef.current) return;
+    visitTrackedRef.current = true;
+    trackEvent('visit', { page: 'home' }).catch(() => undefined);
+  }, []);
 
   useEffect(() => {
     setDisplayRemainingMs(generateRemainingMs);
@@ -478,6 +486,7 @@ export function Home({ onGenerate }: HomeProps) {
     if (typeof window !== 'undefined') {
       window.localStorage.removeItem(HOME_STORAGE_KEY);
     }
+    trackEvent('enter_editor', { source: 'generate_success' }).catch(() => undefined);
     onGenerate(requirement, doc.trim());
   };
 
@@ -642,6 +651,10 @@ export function Home({ onGenerate }: HomeProps) {
     setGenerateStepText('提交生成任务');
     setStep('generating');
     try {
+      trackEvent('start_generate', {
+        source: skipClarify ? 'clarify_skip' : 'clarify_answers',
+        scenario,
+      }).catch(() => undefined);
       const clarificationAnswers =
         skipClarify || questions.length === 0
           ? undefined
@@ -853,7 +866,10 @@ export function Home({ onGenerate }: HomeProps) {
                 {draftDocument.trim() && (
                   <button
                     className="btn-primary"
-                    onClick={() => onGenerate(requirement, draftDocument)}
+                    onClick={() => {
+                      trackEvent('enter_editor', { source: 'step3_draft' }).catch(() => undefined);
+                      onGenerate(requirement, draftDocument);
+                    }}
                   >
                     进入编辑
                   </button>
@@ -907,7 +923,10 @@ export function Home({ onGenerate }: HomeProps) {
                 {draftDocument.trim() && (
                   <button
                     className="btn-secondary"
-                    onClick={() => onGenerate(requirement, draftDocument)}
+                    onClick={() => {
+                      trackEvent('enter_editor', { source: 'step3_error_draft' }).catch(() => undefined);
+                      onGenerate(requirement, draftDocument);
+                    }}
                   >
                     进入编辑
                   </button>
@@ -970,7 +989,10 @@ export function Home({ onGenerate }: HomeProps) {
                 {draftDocument.trim() && (
                   <button
                     className="btn-secondary"
-                    onClick={() => onGenerate(requirement, draftDocument)}
+                    onClick={() => {
+                      trackEvent('enter_editor', { source: 'home_resume_draft' }).catch(() => undefined);
+                      onGenerate(requirement, draftDocument);
+                    }}
                   >
                     先进入文档编辑
                   </button>
@@ -1054,6 +1076,21 @@ export function Home({ onGenerate }: HomeProps) {
         </details>
         <p className="workflow-note">
           以上为预估时间区间（非 SLA），实际耗时会随内容复杂度、并发和网络状态变化。
+        </p>
+        <p className="workflow-note" style={{ marginTop: 6 }}>
+          <a href="/content/features.html" target="_blank" rel="noreferrer">功能介绍</a>
+          {' · '}
+          <a href="/content/templates.html" target="_blank" rel="noreferrer">模板中心</a>
+          {' · '}
+          <a href="/content/cases.html" target="_blank" rel="noreferrer">案例对比</a>
+          {' · '}
+          <a href="/legal/terms.html" target="_blank" rel="noreferrer">用户协议</a>
+          {' · '}
+          <a href="/legal/privacy.html" target="_blank" rel="noreferrer">隐私政策</a>
+          {' · '}
+          <a href="/legal/refund.html" target="_blank" rel="noreferrer">退款说明</a>
+          {' · '}
+          <a href="/legal/contact.html" target="_blank" rel="noreferrer">联系邮箱</a>
         </p>
       </section>
     </div>

@@ -9,6 +9,7 @@ const ANON_FRIENDLY_PATHS = [
   '/clarify',
   '/document/generate',
   '/document/revise',
+  '/events',
 ];
 
 type StoredAuth = {
@@ -508,6 +509,16 @@ export interface SubscriptionCheckoutRes {
   message?: string;
 }
 
+export type FunnelEventName =
+  | 'visit'
+  | 'start_generate'
+  | 'enter_editor'
+  | 'click_export'
+  | 'login_success'
+  | 'checkout_start'
+  | 'checkout_success'
+  | 'export_success';
+
 export function getClarificationQuestions(userRequirement: string, scenario?: string): Promise<ClarifyRes> {
   return post<ClarifyRes>('/clarify', {
     userRequirement,
@@ -655,8 +666,12 @@ export function generateAnonTrial(
   }, API_TIMEOUT_MS);
 }
 
-export function createSubscriptionCheckout(provider: 'stripe' | 'wechatpay' | 'alipay' = 'stripe'): Promise<SubscriptionCheckoutRes> {
+export function createSubscriptionCheckout(provider: 'paddle' = 'paddle'): Promise<SubscriptionCheckoutRes> {
   return post<SubscriptionCheckoutRes>('/subscription/checkout', { provider }, 12000);
+}
+
+export function trackEvent(event: FunnelEventName, props?: Record<string, string | number | boolean>): Promise<{ success: boolean }> {
+  return post<{ success: boolean }>('/events', { event, props: props || {} }, 8000);
 }
 
 export interface ExportDocumentRes {

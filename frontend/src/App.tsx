@@ -9,6 +9,7 @@ import {
   logout,
   refreshAuth,
   register,
+  trackEvent,
   type AuthUser,
 } from './services/api';
 
@@ -136,6 +137,7 @@ export default function App() {
         throw new Error(res.message || '登录失败');
       }
       setAuthUser(res.user);
+      trackEvent('login_success', { mode: authMode }).catch(() => undefined);
       setPassword('');
       setShowAuthDialog(false);
       if (pendingAction === 'download') {
@@ -293,6 +295,15 @@ export default function App() {
             >
               {authMode === 'login' ? '没有账号？去注册' : '已有账号？去登录'}
             </button>
+            <p style={{ marginTop: 10, marginBottom: 0, color: '#8fa4c1', fontSize: 12, lineHeight: 1.6 }}>
+              登录/注册即表示同意
+              {' '}
+              <a href="/legal/terms.html" target="_blank" rel="noreferrer">用户协议</a>
+              {' '}
+              /
+              {' '}
+              <a href="/legal/privacy.html" target="_blank" rel="noreferrer">隐私政策</a>
+            </p>
           </div>
         </div>
       )}
