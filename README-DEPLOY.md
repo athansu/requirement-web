@@ -31,8 +31,10 @@
 - 基础：`PORT` `APP_ENV_PROFILE` `CORS_ORIGIN`
 - LLM：`LLM_API_KEY` `LLM_BASE_URL` `LLM_MODEL_V3` `LLM_MODEL_R1`
 - 鉴权：`AUTH_REQUIRED` `JWT_SECRET`
+- 邮件：`RESEND_API_KEY` `MAIL_FROM` `RESET_PASSWORD_URL_BASE`
 - 支付：`PADDLE_ENV` `PADDLE_API_KEY` `PADDLE_WEBHOOK_SECRET` `PADDLE_PRICE_ID_CNY` `PADDLE_PRICE_ID_USD` `PADDLE_SUCCESS_URL` `PADDLE_CANCEL_URL`
 - 可观测：`STRUCTURED_LOG` `SENTRY_DSN`
+- 备份：`BACKUP_ENABLED` `BACKUP_INTERVAL_MS` `BACKUP_RETENTION_DAYS`
 
 注意：生产环境不得使用默认 `JWT_SECRET`。
 
@@ -84,7 +86,25 @@ npm start
 2. 保留当前日志与错误快照
 3. 标记问题版本并停止继续放量
 
-## 7. 上线前验收清单
+## 7. 数据备份与恢复（最小可用）
+
+默认开启每日备份，文件路径：
+
+- 用户与订阅状态：`backend/data/backups/platform-store.<timestamp>.json`
+- 任务状态：`backend/data/backups/job-store.<timestamp>.json`
+
+恢复步骤：
+
+1. 停止后端进程。
+2. 选择最近一份可用备份：
+  - 复制 `platform-store.<timestamp>.json` 到 `backend/data/platform-store.json`
+  - 复制 `job-store.<timestamp>.json` 到 `backend/data/job-store.json`
+3. 启动后端并检查：
+  - `GET /api/ready`
+  - `GET /api/health`
+4. 抽样验证登录、生成、导出权限。
+
+## 8. 上线前验收清单
 
 - [ ] `上线阻断清单.md` 中所有 P0 关闭
 - [ ] 支付链路已接真实通道与回调
@@ -92,7 +112,7 @@ npm start
 - [ ] 法务页面可访问（协议/隐私/退款）
 - [ ] 有值班与应急联系人
 
-## 8. 当前架构限制（已知）
+## 9. 当前架构限制（已知）
 
 - 任务队列为内存态，服务重启后未完成任务会丢失。
 - 若面向真实付费用户，建议下一阶段迁移为持久化任务队列（Redis/BullMQ 或数据库任务表）。

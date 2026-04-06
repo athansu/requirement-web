@@ -1,6 +1,6 @@
 import path from 'path';
 import fs from 'fs';
-import { randomUUID, createHmac, pbkdf2Sync, timingSafeEqual } from 'crypto';
+import { randomUUID, createHmac, pbkdf2Sync, timingSafeEqual, randomInt } from 'crypto';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import express from 'express';
@@ -119,6 +119,24 @@ const AUTH_REQUIRED = process.env.AUTH_REQUIRED !== '0';
 const JWT_SECRET = sanitizeEnvSecret(process.env.JWT_SECRET, 'change-this-secret-in-prod');
 const ACCESS_TOKEN_TTL_MS = Math.max(Number(process.env.ACCESS_TOKEN_TTL_MS) || 15 * 60 * 1000, 60 * 1000);
 const REFRESH_TOKEN_TTL_MS = Math.max(Number(process.env.REFRESH_TOKEN_TTL_MS) || 30 * 24 * 60 * 60 * 1000, 60 * 1000);
+const PASSWORD_RESET_CODE_TTL_MS = Math.max(Number(process.env.PASSWORD_RESET_CODE_TTL_MS) || 15 * 60 * 1000, 60 * 1000);
+const PASSWORD_RESET_RESEND_COOLDOWN_MS = Math.max(Number(process.env.PASSWORD_RESET_RESEND_COOLDOWN_MS) || 60 * 1000, 10 * 1000);
+const PASSWORD_RESET_MAX_VERIFY_ATTEMPTS = Math.max(Number(process.env.PASSWORD_RESET_MAX_VERIFY_ATTEMPTS) || 8, 3);
+const PASSWORD_RESET_RATE_LIMIT_WINDOW_MS = Math.max(
+  Number(process.env.PASSWORD_RESET_RATE_LIMIT_WINDOW_MS) || 15 * 60 * 1000,
+  60 * 1000
+);
+const PASSWORD_RESET_FORGOT_MAX_PER_WINDOW = Math.max(
+  Number(process.env.PASSWORD_RESET_FORGOT_MAX_PER_WINDOW) || 5,
+  1
+);
+const PASSWORD_RESET_VERIFY_MAX_PER_WINDOW = Math.max(
+  Number(process.env.PASSWORD_RESET_VERIFY_MAX_PER_WINDOW) || 20,
+  1
+);
+const PASSWORD_RESET_EXPOSE_CODE = process.env.PASSWORD_RESET_EXPOSE_CODE
+  ? process.env.PASSWORD_RESET_EXPOSE_CODE === '1'
+  : ['dev', 'test'].includes(APP_ENV_PROFILE);
 const RATE_LIMIT_WINDOW_MS = Math.max(Number(process.env.RATE_LIMIT_WINDOW_MS) || 60 * 1000, 1000);
 const DEFAULT_RATE_LIMIT_PER_WINDOW = Math.max(Number(process.env.DEFAULT_RATE_LIMIT_PER_WINDOW) || 60, 10);
 const WRITE_RATE_LIMIT_PER_WINDOW = Math.max(Number(process.env.WRITE_RATE_LIMIT_PER_WINDOW) || 30, 10);
@@ -143,7 +161,14 @@ const PADDLE_PRICE_ID_USD = sanitizeEnvSecret(process.env.PADDLE_PRICE_ID_USD, '
 const PADDLE_SUCCESS_URL = (process.env.PADDLE_SUCCESS_URL || '').trim();
 const PADDLE_CANCEL_URL = (process.env.PADDLE_CANCEL_URL || '').trim();
 const PADDLE_CHECKOUT_LOCALE = (process.env.PADDLE_CHECKOUT_LOCALE || 'zh').trim();
+const RESEND_API_KEY = sanitizeEnvSecret(process.env.RESEND_API_KEY, '');
+const MAIL_FROM = sanitizeText(process.env.MAIL_FROM || '', 200);
+const RESET_PASSWORD_URL_BASE = sanitizeText(process.env.RESET_PASSWORD_URL_BASE || '', 600).replace(/\/+$/, '');
 const WEBHOOK_EVENT_TTL_MS = Math.max(Number(process.env.WEBHOOK_EVENT_TTL_MS) || 45 * 24 * 60 * 60 * 1000, 24 * 60 * 60 * 1000);
+const BACKUP_ENABLED = process.env.BACKUP_ENABLED ? process.env.BACKUP_ENABLED !== '0' : true;
+const BACKUP_INTERVAL_MS = Math.max(Number(process.env.BACKUP_INTERVAL_MS) || 24 * 60 * 60 * 1000, 60 * 60 * 1000);
+const BACKUP_RETENTION_DAYS = Math.max(Number(process.env.BACKUP_RETENTION_DAYS) || 14, 1);
+const BACKUP_DIR = path.resolve(__dirname, './data/backups');
 const ANON_TRIAL_TOKEN_TTL_MS = Math.max(Number(process.env.ANON_TRIAL_TOKEN_TTL_MS) || 30 * 60 * 1000, 60 * 1000);
 const ANON_TRIAL_MAX_PREVIEW_CHARS = Math.max(Number(process.env.ANON_TRIAL_MAX_PREVIEW_CHARS) || 20000, 2000);
 const ANON_QUOTA_ENFORCED = process.env.ANON_QUOTA_ENFORCED
@@ -297,9 +322,12 @@ const anonTrialByFingerprint = new Map();
 const anonTrialByIp = new Map();
 const anonTrialTickets = new Map();
 const anonUsageByMonth = new Map();
+const passwordResetByEmail = new Map();
+const passwordResetRateLimitWindows = new Map();
 
 let persistUserTimer = null;
 let persistJobTimer = null;
+let backupTimer = null;
 
 function ensureDirFor(filePath) {
   const dir = path.dirname(filePath);
@@ -398,6 +426,136 @@ function sanitizePassword(value) {
 
 function sanitizeName(value) {
   return sanitizeText(String(value || ''), 80);
+}
+
+function createPasswordResetCode() {
+  return String(randomInt(0, 1000000)).padStart(6, '0');
+}
+
+function maskEmail(email) {
+  const [local = '', domain = ''] = String(email || '').split('@');
+  if (!local || !domain) return '***';
+  const head = local.slice(0, 2);
+  return `${head}${'*'.repeat(Math.max(local.length - 2, 1))}@${domain}`;
+}
+
+function removeRefreshTokensByUserId(userId) {
+  for (const [token, item] of refreshTokens.entries()) {
+    if (item?.userId === userId) {
+      refreshTokens.delete(token);
+    }
+  }
+}
+
+function cleanupPasswordResetRequests() {
+  const now = Date.now();
+  for (const [email, item] of passwordResetByEmail.entries()) {
+    if (!item || Number(item.expiresAt) <= now) {
+      passwordResetByEmail.delete(email);
+    }
+  }
+}
+
+function cleanupPasswordResetRateLimits() {
+  const now = Date.now();
+  for (const [key, item] of passwordResetRateLimitWindows.entries()) {
+    if (!item || now - Number(item.windowStartedAt || 0) >= PASSWORD_RESET_RATE_LIMIT_WINDOW_MS) {
+      passwordResetRateLimitWindows.delete(key);
+    }
+  }
+}
+
+function enforcePasswordResetRateLimit({ scope, email, ip, limit }) {
+  if (!scope || !email || !ip || !Number.isFinite(limit) || limit <= 0) {
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+  cleanupPasswordResetRateLimits();
+  const now = Date.now();
+  const key = `${scope}:${email}:${ip}`;
+  const existing = passwordResetRateLimitWindows.get(key);
+  if (!existing || now - existing.windowStartedAt >= PASSWORD_RESET_RATE_LIMIT_WINDOW_MS) {
+    passwordResetRateLimitWindows.set(key, { windowStartedAt: now, count: 1 });
+    return { allowed: true, retryAfterSeconds: 0 };
+  }
+  if (existing.count >= limit) {
+    const retryAfterSeconds = Math.max(
+      1,
+      Math.ceil((PASSWORD_RESET_RATE_LIMIT_WINDOW_MS - (now - existing.windowStartedAt)) / 1000)
+    );
+    return { allowed: false, retryAfterSeconds };
+  }
+  existing.count += 1;
+  passwordResetRateLimitWindows.set(key, existing);
+  return { allowed: true, retryAfterSeconds: 0 };
+}
+
+function isMailServiceConfigured() {
+  return Boolean(RESEND_API_KEY && MAIL_FROM && RESET_PASSWORD_URL_BASE);
+}
+
+function buildResetPasswordLink(email, resetCode) {
+  if (!RESET_PASSWORD_URL_BASE) return '';
+  const params = new URLSearchParams({
+    auth: 'reset-password',
+    email,
+    code: resetCode,
+  });
+  return `${RESET_PASSWORD_URL_BASE}/?${params.toString()}`;
+}
+
+async function sendPasswordResetEmail({ email, resetCode, requestId }) {
+  if (!isMailServiceConfigured()) {
+    throw new Error('邮件服务未配置');
+  }
+  const resetLink = buildResetPasswordLink(email, resetCode);
+  const subject = 'ReqMD 密码重置验证码';
+  const text = [
+    '你正在请求重置 ReqMD 账号密码。',
+    `验证码：${resetCode}（15 分钟内有效）`,
+    resetLink ? `重置链接：${resetLink}` : '',
+    '如果不是你本人操作，请忽略此邮件。',
+  ].filter(Boolean).join('\n');
+  const html = [
+    '<div style="font-family:Arial,sans-serif;line-height:1.6;color:#1f2937">',
+    '<h2 style="margin:0 0 12px">ReqMD 密码重置</h2>',
+    '<p>你正在请求重置账号密码。</p>',
+    `<p style="font-size:18px"><strong>验证码：${resetCode}</strong>（15 分钟内有效）</p>`,
+    resetLink
+      ? `<p><a href="${resetLink}" target="_blank" rel="noreferrer">点击这里重置密码</a></p>`
+      : '',
+    '<p>如果不是你本人操作，请忽略此邮件。</p>',
+    '</div>',
+  ].join('');
+  const resp = await fetch('https://api.resend.com/emails', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${RESEND_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({
+      from: MAIL_FROM,
+      to: [email],
+      subject,
+      text,
+      html,
+      tags: [
+        { name: 'category', value: 'auth' },
+        { name: 'type', value: 'password-reset' },
+      ],
+    }),
+  });
+  if (!resp.ok) {
+    let detail = '';
+    try {
+      const parsed = await resp.json();
+      detail = sanitizeText(parsed?.message || parsed?.error || '', 200);
+    } catch {
+      detail = '';
+    }
+    throw new Error(`发送重置邮件失败：${detail || resp.statusText || `HTTP ${resp.status}`}`);
+  }
+  const payload = await resp.json();
+  return sanitizeText(payload?.id || '', 120) || requestId || randomUUID();
 }
 
 function getUserPlan(userId) {
@@ -531,6 +689,7 @@ function persistPlatformState() {
       anonTrialByFingerprint: [...anonTrialByFingerprint.entries()],
       anonTrialByIp: [...anonTrialByIp.entries()],
       anonTrialTickets: [...anonTrialTickets.entries()],
+      passwordResetByEmail: [...passwordResetByEmail.entries()],
       updatedAt: nowIso(),
     };
     fs.writeFileSync(USER_STORE_FILE, JSON.stringify(payload, null, 2), 'utf8');
@@ -634,7 +793,24 @@ function loadPlatformState() {
       if (!Array.isArray(item) || item.length !== 2) continue;
       anonTrialTickets.set(item[0], item[1]);
     }
+    const passwordResetEntries = Array.isArray(parsed.passwordResetByEmail) ? parsed.passwordResetByEmail : [];
+    for (const item of passwordResetEntries) {
+      if (!Array.isArray(item) || item.length !== 2) continue;
+      const email = sanitizeEmail(item[0]);
+      const payload = item[1];
+      if (!email || !payload?.userId || !payload?.codeHash) continue;
+      passwordResetByEmail.set(email, {
+        email,
+        userId: sanitizeText(payload.userId, 120),
+        codeHash: sanitizeText(payload.codeHash, 300),
+        expiresAt: Number(payload.expiresAt) || 0,
+        attempts: Number(payload.attempts) || 0,
+        requestedAt: Number(payload.requestedAt) || Date.now(),
+        lastSentAt: Number(payload.lastSentAt) || Date.now(),
+      });
+    }
     cleanupRefreshTokens();
+    cleanupPasswordResetRequests();
   } catch (error) {
     console.error('[loadPlatformState]', error);
   }
@@ -702,6 +878,65 @@ function loadQueueState() {
     }
   } catch (error) {
     console.error('[loadQueueState]', error);
+  }
+}
+
+function formatBackupStamp(ts = Date.now()) {
+  const d = new Date(ts);
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getUTCFullYear()}${pad(d.getUTCMonth() + 1)}${pad(d.getUTCDate())}-${pad(d.getUTCHours())}${pad(d.getUTCMinutes())}${pad(d.getUTCSeconds())}Z`;
+}
+
+function pruneExpiredBackups() {
+  try {
+    if (!fs.existsSync(BACKUP_DIR)) return;
+    const entries = fs.readdirSync(BACKUP_DIR, { withFileTypes: true });
+    const expireBefore = Date.now() - (BACKUP_RETENTION_DAYS * 24 * 60 * 60 * 1000);
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith('.json')) continue;
+      const filePath = path.join(BACKUP_DIR, entry.name);
+      const stat = fs.statSync(filePath);
+      if (Number(stat.mtimeMs) < expireBefore) {
+        fs.unlinkSync(filePath);
+      }
+    }
+  } catch (error) {
+    console.error('[pruneExpiredBackups]', error);
+  }
+}
+
+function runDailyBackup(reason = 'scheduled') {
+  if (!BACKUP_ENABLED) return;
+  try {
+    persistPlatformState();
+    persistQueueState();
+    ensureDirFor(path.join(BACKUP_DIR, 'keep'));
+    const stamp = formatBackupStamp();
+    const platformBackupPath = path.join(BACKUP_DIR, `platform-store.${stamp}.json`);
+    const jobBackupPath = path.join(BACKUP_DIR, `job-store.${stamp}.json`);
+    if (fs.existsSync(USER_STORE_FILE)) {
+      fs.copyFileSync(USER_STORE_FILE, platformBackupPath);
+    }
+    if (fs.existsSync(JOB_STORE_FILE)) {
+      fs.copyFileSync(JOB_STORE_FILE, jobBackupPath);
+    }
+    pruneExpiredBackups();
+    console.log(`[backup] reason=${reason} ok stamp=${stamp}`);
+  } catch (error) {
+    console.error('[runDailyBackup]', error);
+  }
+}
+
+function startBackupScheduler() {
+  if (!BACKUP_ENABLED) return;
+  if (backupTimer) return;
+  runDailyBackup('startup');
+  backupTimer = setInterval(() => {
+    runDailyBackup('scheduled');
+  }, BACKUP_INTERVAL_MS);
+  if (typeof backupTimer?.unref === 'function') {
+    backupTimer.unref();
   }
 }
 
@@ -2635,6 +2870,140 @@ app.post('/api/auth/login', asyncRoute(async (req, res) => {
   });
 }));
 
+app.post('/api/auth/forgot-password', asyncRoute(async (req, res) => {
+  res.set(jsonHeader);
+  const email = sanitizeEmail(req.body?.email);
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ success: false, message: '请输入有效邮箱地址' });
+  }
+  const ip = getClientIp(req);
+  const forgotRateCheck = enforcePasswordResetRateLimit({
+    scope: 'forgot',
+    email,
+    ip,
+    limit: PASSWORD_RESET_FORGOT_MAX_PER_WINDOW,
+  });
+  if (!forgotRateCheck.allowed) {
+    return res.status(429).json({
+      success: true,
+      message: `请求过于频繁，请 ${forgotRateCheck.retryAfterSeconds} 秒后重试`,
+    });
+  }
+
+  cleanupPasswordResetRequests();
+  const now = Date.now();
+  const existing = passwordResetByEmail.get(email);
+  const userId = usersByEmail.get(email);
+  const user = userId ? usersById.get(userId) : null;
+  const genericMessage = '若邮箱已注册，我们已发送重置验证码（15 分钟内有效）';
+
+  if (!user) {
+    return res.json({ success: true, message: genericMessage });
+  }
+
+  if (existing && existing.expiresAt > now && now - existing.lastSentAt < PASSWORD_RESET_RESEND_COOLDOWN_MS) {
+    const cooldownSeconds = Math.ceil((PASSWORD_RESET_RESEND_COOLDOWN_MS - (now - existing.lastSentAt)) / 1000);
+    return res.json({
+      success: true,
+      message: `验证码发送过于频繁，请 ${cooldownSeconds} 秒后重试`,
+    });
+  }
+
+  const resetCode = createPasswordResetCode();
+  passwordResetByEmail.set(email, {
+    email,
+    userId: user.id,
+    codeHash: hashPassword(resetCode),
+    expiresAt: now + PASSWORD_RESET_CODE_TTL_MS,
+    attempts: 0,
+    requestedAt: now,
+    lastSentAt: now,
+  });
+  schedulePersistUsers();
+  try {
+    const mailId = await sendPasswordResetEmail({
+      email,
+      resetCode,
+      requestId: req.requestId || '',
+    });
+    console.info(`[auth.forgot-password] requestId=${req.requestId || ''} email=${maskEmail(email)} mailId=${mailId}`);
+  } catch (error) {
+    console.error(`[auth.forgot-password] requestId=${req.requestId || ''} email=${maskEmail(email)} mailSendFailed`, error?.message || error);
+  }
+
+  return res.json({
+    success: true,
+    message: genericMessage,
+    ...(PASSWORD_RESET_EXPOSE_CODE ? { resetCode } : {}),
+  });
+}));
+
+app.post('/api/auth/reset-password', asyncRoute(async (req, res) => {
+  res.set(jsonHeader);
+  const email = sanitizeEmail(req.body?.email);
+  const resetCode = sanitizeText(req.body?.resetCode, 20).replace(/\s+/g, '');
+  const newPassword = sanitizePassword(req.body?.newPassword);
+
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    return res.status(400).json({ success: false, message: '请输入有效邮箱地址' });
+  }
+  if (!resetCode || !/^\d{6}$/.test(resetCode)) {
+    return res.status(400).json({ success: false, message: '请输入 6 位重置验证码' });
+  }
+  if (!newPassword || newPassword.length < 8) {
+    return res.status(400).json({ success: false, message: '新密码至少 8 位' });
+  }
+  const ip = getClientIp(req);
+  const verifyRateCheck = enforcePasswordResetRateLimit({
+    scope: 'reset',
+    email,
+    ip,
+    limit: PASSWORD_RESET_VERIFY_MAX_PER_WINDOW,
+  });
+  if (!verifyRateCheck.allowed) {
+    return res.status(429).json({
+      success: false,
+      code: 'rate_limited',
+      message: `重置尝试过于频繁，请 ${verifyRateCheck.retryAfterSeconds} 秒后重试`,
+    });
+  }
+
+  cleanupPasswordResetRequests();
+  const record = passwordResetByEmail.get(email);
+  if (!record || Number(record.expiresAt) <= Date.now()) {
+    passwordResetByEmail.delete(email);
+    schedulePersistUsers();
+    return res.status(400).json({ success: false, message: '重置验证码无效或已过期，请重新获取' });
+  }
+
+  if (!verifyPassword(resetCode, record.codeHash)) {
+    record.attempts = Number(record.attempts || 0) + 1;
+    if (record.attempts >= PASSWORD_RESET_MAX_VERIFY_ATTEMPTS) {
+      passwordResetByEmail.delete(email);
+    } else {
+      passwordResetByEmail.set(email, record);
+    }
+    schedulePersistUsers();
+    return res.status(400).json({ success: false, message: '重置验证码错误' });
+  }
+
+  const user = usersById.get(record.userId);
+  if (!user || user.email !== email) {
+    passwordResetByEmail.delete(email);
+    schedulePersistUsers();
+    return res.status(400).json({ success: false, message: '账号不存在，请重新获取重置验证码' });
+  }
+
+  user.passwordHash = hashPassword(newPassword);
+  user.updatedAt = nowIso();
+  usersById.set(user.id, user);
+  passwordResetByEmail.delete(email);
+  removeRefreshTokensByUserId(user.id);
+  schedulePersistUsers();
+
+  return res.json({ success: true, message: '密码重置成功，请使用新密码登录' });
+}));
+
 app.post('/api/auth/refresh', asyncRoute(async (req, res) => {
   res.set(jsonHeader);
   cleanupRefreshTokens();
@@ -3083,6 +3452,7 @@ app.get('/', (req, res) => {
 
 app.get('/api/health', (req, res) => {
   res.set(jsonHeader);
+  const mailConfigured = isMailServiceConfigured();
   res.json({
     ok: true,
     envProfile: APP_ENV_PROFILE,
@@ -3095,6 +3465,10 @@ app.get('/api/health', (req, res) => {
     maxOutputTokens: MAX_OUTPUT_TOKENS,
     paddleEnv: PADDLE_ENV,
     paddleConfigured: Boolean(PADDLE_API_KEY && PADDLE_WEBHOOK_SECRET && PADDLE_PRICE_ID_CNY && PADDLE_PRICE_ID_USD && PADDLE_SUCCESS_URL && PADDLE_CANCEL_URL),
+    mailConfigured,
+    backupEnabled: BACKUP_ENABLED,
+    backupIntervalMs: BACKUP_INTERVAL_MS,
+    backupRetentionDays: BACKUP_RETENTION_DAYS,
     queueLength: generationQueue.length,
     reviseConsistencyQueueLength: reviseConsistencyQueue.length,
     users: usersById.size,
@@ -3104,6 +3478,7 @@ app.get('/api/health', (req, res) => {
 app.get('/api/ready', (req, res) => {
   res.set(jsonHeader);
   const key = (process.env.LLM_API_KEY || '').trim();
+  const mailConfigured = isMailServiceConfigured();
   const paddleConfigured = Boolean(
     PADDLE_API_KEY
     && PADDLE_WEBHOOK_SECRET
@@ -3115,6 +3490,7 @@ app.get('/api/ready', (req, res) => {
   const checks = {
     llmKeyLoaded: Boolean(key && key.startsWith('sk-')),
     paddleConfigured,
+    mailConfigured,
     userStoreWritable: true,
     jobStoreWritable: true,
   };
@@ -3131,9 +3507,11 @@ app.get('/api/ready', (req, res) => {
     checks.jobStoreWritable = false;
   }
   const mustCheckPaddle = APP_ENV_PROFILE === 'prod';
+  const mustCheckMail = APP_ENV_PROFILE === 'prod';
   const ready = checks.llmKeyLoaded
     && checks.userStoreWritable
     && checks.jobStoreWritable
+    && (mustCheckMail ? checks.mailConfigured : true)
     && (mustCheckPaddle ? checks.paddleConfigured : true);
   return res.status(ready ? 200 : 503).json({ success: ready, checks });
 });
@@ -3701,11 +4079,15 @@ if (!PADDLE_PRICE_ID_CNY || !PADDLE_PRICE_ID_USD) {
 if (!PADDLE_SUCCESS_URL || !PADDLE_CANCEL_URL) {
   console.warn('Paddle 回跳地址未配置（PADDLE_SUCCESS_URL / PADDLE_CANCEL_URL）。');
 }
+if (!isMailServiceConfigured()) {
+  console.warn('邮件重置密码配置缺失（RESEND_API_KEY / MAIL_FROM / RESET_PASSWORD_URL_BASE）。');
+}
 
 loadPlatformState();
 loadQueueState();
 processGenerationQueue();
 processReviseConsistencyQueue();
+startBackupScheduler();
 
 process.on('SIGINT', () => {
   persistPlatformState();

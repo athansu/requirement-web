@@ -10,3 +10,7 @@ frontend/.env.local
 frontend/.env.production.local
 frontend/.env.development.local
 
+.vercel
+.env
+.env*.local
+backend/data/backups/
