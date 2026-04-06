@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { Home } from './pages/Home';
 import { DocumentPage } from './pages/DocumentPage';
 import {
+  forgotPassword,
   getAuthTokens,
   getMe,
   getUsage,
@@ -9,6 +10,7 @@ import {
   logout,
   refreshAuth,
   register,
+  resetPassword,
   trackEvent,
   type AuthUser,
 } from './services/api';
@@ -40,9 +42,11 @@ export default function App() {
   const [authLoading, setAuthLoading] = useState(true);
   const [showAuthDialog, setShowAuthDialog] = useState(false);
   const [authError, setAuthError] = useState('');
-  const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
+  const [authDialogNotice, setAuthDialogNotice] = useState('');
+  const [authMode, setAuthMode] = useState<'login' | 'register' | 'forgot'>('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [resetCode, setResetCode] = useState('');
   const [name, setName] = useState('');
   const [usageSummary, setUsageSummary] = useState('');
   const [pendingAction, setPendingAction] = useState<'download' | null>(null);
@@ -62,6 +66,25 @@ export default function App() {
     }
     window.localStorage.setItem(APP_STORAGE_KEY, JSON.stringify({ document, userRequirement }));
   }, [document, userRequirement]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('auth') !== 'reset-password') return;
+
+    const emailFromLink = (params.get('email') || '').trim();
+    const codeFromLink = (params.get('code') || '').trim();
+    setEmail(emailFromLink);
+    setResetCode(codeFromLink);
+    setPassword('');
+    setAuthMode('forgot');
+    setAuthError('');
+    setAuthDialogNotice(codeFromLink ? '已从邮件链接填入重置码，请输入新密码后提交。' : '请填写重置码并输入新密码。');
+    setShowAuthDialog(true);
+
+    const nextPath = `${window.location.pathname}${window.location.hash || ''}`;
+    window.history.replaceState({}, window.document.title, nextPath);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -111,19 +134,35 @@ export default function App() {
     };
   }, [authUser]);
 
+  useEffect(() => {
+    setAuthError('');
+    setAuthDialogNotice('');
+    if (authMode !== 'forgot') {
+      setResetCode('');
+    }
+  }, [authMode]);
+
   const handleGenerate = (req: string, doc: string) => {
     setUserRequirement(req);
     setDocument(doc);
   };
 
-  const openAuthDialog = (mode: 'login' | 'register' = 'login') => {
+  const openAuthDialog = (mode: 'login' | 'register' | 'forgot' = 'login') => {
     setAuthMode(mode);
     setAuthError('');
+    setAuthDialogNotice('');
+    setResetCode('');
+    if (mode !== 'register') setName('');
+    if (mode !== 'forgot') {
+      setPassword('');
+    }
     setShowAuthDialog(true);
   };
 
   const handleAuthSubmit = async () => {
+    if (authMode === 'forgot') return;
     setAuthError('');
+    setAuthDialogNotice('');
     if (!email.trim() || !password.trim()) {
       setAuthError('请输入邮箱和密码');
       return;
@@ -150,6 +189,55 @@ export default function App() {
       }
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : '登录失败');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSendResetCode = async () => {
+    setAuthError('');
+    setAuthDialogNotice('');
+    if (!email.trim()) {
+      setAuthError('请输入注册邮箱');
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const res = await forgotPassword(email.trim());
+      if (!res.success) {
+        throw new Error(res.message || '发送重置码失败');
+      }
+      setAuthDialogNotice(res.message || '若邮箱已注册，重置码已发送');
+      if (res.resetCode) {
+        setResetCode(res.resetCode);
+        setAuthDialogNotice(`已发送重置码（测试环境）：${res.resetCode}`);
+      }
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : '发送重置码失败');
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    setAuthError('');
+    setAuthDialogNotice('');
+    if (!email.trim() || !resetCode.trim() || !password.trim()) {
+      setAuthError('请填写邮箱、6位重置码和新密码');
+      return;
+    }
+    setAuthLoading(true);
+    try {
+      const res = await resetPassword(email.trim(), resetCode.trim(), password);
+      if (!res.success) {
+        throw new Error(res.message || '重置密码失败');
+      }
+      setAuthDialogNotice('密码已重置，请使用新密码登录');
+      setPassword('');
+      setResetCode('');
+      setAuthMode('login');
+    } catch (error) {
+      setAuthError(error instanceof Error ? error.message : '重置密码失败');
     } finally {
       setAuthLoading(false);
     }
@@ -251,12 +339,17 @@ export default function App() {
           >
             <h3 style={{ marginTop: 0, marginBottom: 8 }}>
               {pendingAction === 'download'
-                ? (authMode === 'login' ? '登录后继续下载' : '注册后继续下载')
-                : (authMode === 'login' ? '登录' : '注册并登录')}
+                ? (authMode === 'register' ? '注册后继续下载' : authMode === 'forgot' ? '找回密码后登录下载' : '登录后继续下载')
+                : (authMode === 'register' ? '注册并登录' : authMode === 'forgot' ? '找回密码' : '登录')}
             </h3>
             {pendingAction === 'download' && (
               <p style={{ color: '#95a9c8', marginTop: 0, fontSize: 13 }}>
                 当前文档：{pendingDocumentContext?.title || '未命名文档'}。登录成功后会自动继续下载。
+              </p>
+            )}
+            {authMode === 'forgot' && (
+              <p style={{ color: '#95a9c8', marginTop: 0, fontSize: 13 }}>
+                输入注册邮箱，发送 6 位重置码后设置新密码。
               </p>
             )}
             {authMode === 'register' && (
@@ -273,28 +366,72 @@ export default function App() {
               onChange={(e) => setEmail(e.target.value)}
               style={{ width: '100%', marginBottom: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(146,170,203,0.25)', background: '#0b1526', color: '#dce8fb' }}
             />
+            {authMode === 'forgot' && (
+              <>
+                <button
+                  onClick={handleSendResetCode}
+                  disabled={authLoading}
+                  style={{ width: '100%', marginBottom: 10, padding: '10px 12px', borderRadius: 999, border: '1px solid rgba(146,170,203,0.3)', background: 'transparent', color: '#dce8fb', cursor: authLoading ? 'not-allowed' : 'pointer' }}
+                >
+                  {authLoading ? '发送中…' : '发送重置码'}
+                </button>
+                <input
+                  placeholder="6位重置码"
+                  value={resetCode}
+                  onChange={(e) => setResetCode(e.target.value)}
+                  style={{ width: '100%', marginBottom: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(146,170,203,0.25)', background: '#0b1526', color: '#dce8fb' }}
+                />
+              </>
+            )}
             <input
               type="password"
-              placeholder="密码（至少 8 位）"
+              placeholder={authMode === 'forgot' ? '新密码（至少 8 位）' : '密码（至少 8 位）'}
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               style={{ width: '100%', marginBottom: 10, padding: '10px 12px', borderRadius: 10, border: '1px solid rgba(146,170,203,0.25)', background: '#0b1526', color: '#dce8fb' }}
             />
+            {authDialogNotice && <p style={{ color: '#7dd8ff', marginTop: 6 }}>{authDialogNotice}</p>}
             {authError && <p style={{ color: '#ff9ea5', marginTop: 6 }}>{authError}</p>}
             <button
-              onClick={handleAuthSubmit}
+              onClick={authMode === 'forgot' ? handleResetPassword : handleAuthSubmit}
               disabled={authLoading}
               style={{ width: '100%', marginTop: 6, padding: '10px 12px', borderRadius: 999, border: 'none', background: '#58c6ff', color: '#032034', fontWeight: 700, cursor: authLoading ? 'not-allowed' : 'pointer' }}
             >
-              {authLoading ? '处理中…' : authMode === 'login' ? '登录' : '注册并登录'}
+              {authLoading
+                ? '处理中…'
+                : authMode === 'register'
+                  ? '注册并登录'
+                  : authMode === 'forgot'
+                    ? '重置密码'
+                    : '登录'}
             </button>
-            <button
-              onClick={() => setAuthMode((m) => (m === 'login' ? 'register' : 'login'))}
-              disabled={authLoading}
-              style={{ width: '100%', marginTop: 10, padding: '10px 12px', borderRadius: 999, border: '1px solid rgba(146,170,203,0.3)', background: 'transparent', color: '#dce8fb', cursor: authLoading ? 'not-allowed' : 'pointer' }}
-            >
-              {authMode === 'login' ? '没有账号？去注册' : '已有账号？去登录'}
-            </button>
+            {authMode !== 'forgot' && (
+              <button
+                onClick={() => setAuthMode((m) => (m === 'register' ? 'login' : 'register'))}
+                disabled={authLoading}
+                style={{ width: '100%', marginTop: 10, padding: '10px 12px', borderRadius: 999, border: '1px solid rgba(146,170,203,0.3)', background: 'transparent', color: '#dce8fb', cursor: authLoading ? 'not-allowed' : 'pointer' }}
+              >
+                {authMode === 'register' ? '已有账号？去登录' : '没有账号？去注册'}
+              </button>
+            )}
+            {authMode !== 'forgot' && (
+              <button
+                onClick={() => setAuthMode('forgot')}
+                disabled={authLoading}
+                style={{ width: '100%', marginTop: 10, padding: '10px 12px', borderRadius: 999, border: '1px solid rgba(146,170,203,0.3)', background: 'transparent', color: '#b8cbe6', cursor: authLoading ? 'not-allowed' : 'pointer' }}
+              >
+                忘记密码？
+              </button>
+            )}
+            {authMode === 'forgot' && (
+              <button
+                onClick={() => setAuthMode('login')}
+                disabled={authLoading}
+                style={{ width: '100%', marginTop: 10, padding: '10px 12px', borderRadius: 999, border: '1px solid rgba(146,170,203,0.3)', background: 'transparent', color: '#b8cbe6', cursor: authLoading ? 'not-allowed' : 'pointer' }}
+              >
+                返回登录
+              </button>
+            )}
             <p style={{ marginTop: 10, marginBottom: 0, color: '#8fa4c1', fontSize: 12, lineHeight: 1.6 }}>
               登录/注册即表示同意
               {' '}
