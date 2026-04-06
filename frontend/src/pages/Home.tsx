@@ -75,7 +75,6 @@ const POLL_TRANSIENT_ERROR_MAX = 8;
 const POLL_TRANSIENT_BACKOFF_MS = 1500;
 const GENERATE_MAX_WAIT_MS = Math.max(Number(import.meta.env.VITE_GENERATE_MAX_WAIT_MS) || 540000, 60000);
 const ZERO_BUDGET_GRACE_MS = 30000;
-const HOME_STATE_TTL_MS = Math.max(Number(import.meta.env.VITE_HOME_STATE_TTL_MS) || 20 * 60 * 1000, 60 * 1000);
 
 function stageLabel(stage: string | undefined) {
   switch (stage) {
@@ -138,186 +137,34 @@ interface PersistedHomeState {
 }
 
 function readHomeState(): PersistedHomeState {
-  if (typeof window === 'undefined') {
-    return {
-      input: '',
-      step: 'input',
-      questions: [],
-      answers: {},
-      scenario: '通用产品',
-      generateProgress: 0,
-      generateStepText: '准备提交任务',
-      activeJobId: '',
-      generateStage: 'queued',
-      generateLifecycle: 'queued',
-      outputLevel: 'draft',
-      draftDocument: '',
-      stageProgress: 0,
-      overallProgress: 0,
-      lastError: '',
-      stageAttempt: 0,
-      stageMaxAttempts: 0,
-      generateRemainingMs: 0,
-      generateElapsedMs: 0,
-      fallbackAttempts: 0,
-      missingSections: [],
-      missingSectionIds: [],
-      invalidSectionIds: [],
-      weakSectionIds: [],
-      completionScore: 0,
-      qualityWarnings: [],
-    };
-  }
-
-  try {
-    const raw = window.localStorage.getItem(HOME_STORAGE_KEY);
-    if (!raw) {
-      return {
-        input: '',
-        step: 'input',
-        questions: [],
-        answers: {},
-        scenario: '通用产品',
-        generateProgress: 0,
-        generateStepText: '准备提交任务',
-        activeJobId: '',
-        generateStage: 'queued',
-        generateLifecycle: 'queued',
-        outputLevel: 'draft',
-        draftDocument: '',
-        stageProgress: 0,
-        overallProgress: 0,
-        lastError: '',
-        stageAttempt: 0,
-        stageMaxAttempts: 0,
-        generateRemainingMs: 0,
-        generateElapsedMs: 0,
-        fallbackAttempts: 0,
-        missingSections: [],
-        missingSectionIds: [],
-        invalidSectionIds: [],
-        weakSectionIds: [],
-        completionScore: 0,
-        qualityWarnings: [],
-      };
-    }
-
-    const parsed = JSON.parse(raw) as Partial<PersistedHomeState>;
-    const isExpired = typeof parsed.savedAt === 'number' && Date.now() - parsed.savedAt > HOME_STATE_TTL_MS;
-    const shouldResetGenerating =
-      parsed.step === 'generating'
-      && (
-        isExpired
-        || typeof parsed.activeJobId !== 'string'
-        || !parsed.activeJobId.trim()
-      );
-
-    return {
-      input: typeof parsed.input === 'string' ? parsed.input : '',
-      step:
-        shouldResetGenerating
-          ? 'input'
-          : parsed.step === 'clarify' || parsed.step === 'generating'
-          ? parsed.step
-          : 'input',
-      questions: Array.isArray(parsed.questions)
-        ? parsed.questions.filter((item): item is string => typeof item === 'string').slice(0, 5)
-        : [],
-      answers:
-        parsed.answers && typeof parsed.answers === 'object'
-          ? Object.fromEntries(
-              Object.entries(parsed.answers).filter(
-                ([key, value]) => /^\d+$/.test(key) && typeof value === 'string'
-              )
-            )
-          : {},
-      scenario:
-        typeof parsed.scenario === 'string' && parsed.scenario.trim()
-          ? parsed.scenario
-          : '通用产品',
-      generateProgress:
-        typeof parsed.generateProgress === 'number' ? parsed.generateProgress : 0,
-      generateStepText:
-        typeof parsed.generateStepText === 'string' && parsed.generateStepText.trim()
-          ? parsed.generateStepText
-          : '准备提交任务',
-      activeJobId: shouldResetGenerating ? '' : (typeof parsed.activeJobId === 'string' ? parsed.activeJobId : ''),
-      generateStage: shouldResetGenerating ? 'queued' : (typeof parsed.generateStage === 'string' ? parsed.generateStage : 'queued'),
-      generateLifecycle: shouldResetGenerating ? 'queued' : (typeof parsed.generateLifecycle === 'string' ? parsed.generateLifecycle : 'queued'),
-      outputLevel:
-        parsed.outputLevel === 'partial' || parsed.outputLevel === 'final'
-          ? parsed.outputLevel
-          : 'draft',
-      draftDocument: shouldResetGenerating ? '' : (typeof parsed.draftDocument === 'string' ? parsed.draftDocument : ''),
-      stageProgress: shouldResetGenerating ? 0 : (typeof parsed.stageProgress === 'number' ? parsed.stageProgress : 0),
-      overallProgress: shouldResetGenerating ? 0 : (typeof parsed.overallProgress === 'number' ? parsed.overallProgress : 0),
-      lastError: shouldResetGenerating ? '' : (typeof parsed.lastError === 'string' ? parsed.lastError : ''),
-      stageAttempt: shouldResetGenerating ? 0 : (typeof parsed.stageAttempt === 'number' ? parsed.stageAttempt : 0),
-      stageMaxAttempts: shouldResetGenerating ? 0 : (typeof parsed.stageMaxAttempts === 'number' ? parsed.stageMaxAttempts : 0),
-      generateRemainingMs:
-        shouldResetGenerating ? 0 : (typeof parsed.generateRemainingMs === 'number' ? parsed.generateRemainingMs : 0),
-      generateElapsedMs:
-        shouldResetGenerating ? 0 : (typeof parsed.generateElapsedMs === 'number' ? parsed.generateElapsedMs : 0),
-      fallbackAttempts:
-        shouldResetGenerating ? 0 : (typeof parsed.fallbackAttempts === 'number' ? parsed.fallbackAttempts : 0),
-      missingSections: shouldResetGenerating
-        ? []
-        : Array.isArray(parsed.missingSections)
-        ? parsed.missingSections.filter((item): item is string => typeof item === 'string')
-        : [],
-      missingSectionIds: shouldResetGenerating
-        ? []
-        : Array.isArray(parsed.missingSectionIds)
-        ? parsed.missingSectionIds.filter((item): item is number => typeof item === 'number')
-        : [],
-      invalidSectionIds: shouldResetGenerating
-        ? []
-        : Array.isArray(parsed.invalidSectionIds)
-        ? parsed.invalidSectionIds.filter((item): item is number => typeof item === 'number')
-        : [],
-      weakSectionIds: shouldResetGenerating
-        ? []
-        : Array.isArray(parsed.weakSectionIds)
-        ? parsed.weakSectionIds.filter((item): item is number => typeof item === 'number')
-        : [],
-      completionScore:
-        shouldResetGenerating ? 0 : (typeof parsed.completionScore === 'number' ? parsed.completionScore : 0),
-      qualityWarnings: shouldResetGenerating
-        ? []
-        : Array.isArray(parsed.qualityWarnings)
-        ? parsed.qualityWarnings.filter((item): item is string => typeof item === 'string')
-        : [],
-    };
-  } catch {
-    return {
-      input: '',
-      step: 'input',
-      questions: [],
-      answers: {},
-      scenario: '通用产品',
-      generateProgress: 0,
-      generateStepText: '准备提交任务',
-      activeJobId: '',
-      generateStage: 'queued',
-      generateLifecycle: 'queued',
-      outputLevel: 'draft',
-      draftDocument: '',
-      stageProgress: 0,
-      overallProgress: 0,
-      lastError: '',
-      stageAttempt: 0,
-      stageMaxAttempts: 0,
-      generateRemainingMs: 0,
-      generateElapsedMs: 0,
-      fallbackAttempts: 0,
-      missingSections: [],
-      missingSectionIds: [],
-      invalidSectionIds: [],
-      weakSectionIds: [],
-      completionScore: 0,
-      qualityWarnings: [],
-    };
-  }
+  return {
+    input: '',
+    step: 'input',
+    questions: [],
+    answers: {},
+    scenario: '通用产品',
+    generateProgress: 0,
+    generateStepText: '准备提交任务',
+    activeJobId: '',
+    generateStage: 'queued',
+    generateLifecycle: 'queued',
+    outputLevel: 'draft',
+    draftDocument: '',
+    stageProgress: 0,
+    overallProgress: 0,
+    lastError: '',
+    stageAttempt: 0,
+    stageMaxAttempts: 0,
+    generateRemainingMs: 0,
+    generateElapsedMs: 0,
+    fallbackAttempts: 0,
+    missingSections: [],
+    missingSectionIds: [],
+    invalidSectionIds: [],
+    weakSectionIds: [],
+    completionScore: 0,
+    qualityWarnings: [],
+  };
 }
 
 export function Home({ onGenerate }: HomeProps) {

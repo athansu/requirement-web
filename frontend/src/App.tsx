@@ -19,20 +19,7 @@ const APP_STORAGE_KEY = 'requirement-website.app-state.v1';
 const HOME_STORAGE_KEY = 'requirement-website.home-state.v1';
 
 function readAppState() {
-  if (typeof window === 'undefined') {
-    return { document: '', userRequirement: '' };
-  }
-  try {
-    const raw = window.localStorage.getItem(APP_STORAGE_KEY);
-    if (!raw) return { document: '', userRequirement: '' };
-    const parsed = JSON.parse(raw) as { document?: unknown; userRequirement?: unknown };
-    return {
-      document: typeof parsed.document === 'string' ? parsed.document : '',
-      userRequirement: typeof parsed.userRequirement === 'string' ? parsed.userRequirement : '',
-    };
-  } catch {
-    return { document: '', userRequirement: '' };
-  }
+  return { document: '', userRequirement: '' };
 }
 
 export default function App() {
@@ -57,6 +44,12 @@ export default function App() {
   const [exportAfterAuthSignal, setExportAfterAuthSignal] = useState(0);
   const [authNotice, setAuthNotice] = useState('');
   const isDocumentView = Boolean(document && userRequirement);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.removeItem(APP_STORAGE_KEY);
+    window.localStorage.removeItem(HOME_STORAGE_KEY);
+  }, []);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
