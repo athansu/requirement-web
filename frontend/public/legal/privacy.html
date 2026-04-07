@@ -4,49 +4,71 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>隐私政策 - AI Requirement Studio</title>
+    <meta
+      name="description"
+      content="AI Requirement Studio 隐私政策：数据收集范围、使用目的、第三方处理、数据保留与用户权利说明。"
+    />
     <style>
       body { margin: 0; font-family: "PingFang SC","Segoe UI",sans-serif; background: #0a1017; color: #e8f1ff; }
       main { max-width: 900px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.8; }
       h1 { margin: 0 0 8px; font-size: 30px; }
       h2 { margin-top: 28px; font-size: 20px; }
       p, li { color: #b7c8e3; }
+      code { color: #ffd166; }
       a { color: #7fd9ff; }
     </style>
   </head>
   <body>
     <main>
       <h1>隐私政策</h1>
-      <p>更新日期：2026-04-04</p>
-      <p>本政策说明我们如何收集、使用和保护你的信息。</p>
+      <p>更新日期：2026-04-06</p>
+      <p>本政策说明 AI Requirement Studio（以下简称“本服务”）如何收集、使用、存储与保护你的个人信息及业务数据。</p>
 
       <h2>1. 我们收集的信息</h2>
       <ul>
-        <li>账号信息：邮箱、密码摘要、基础账号资料。</li>
-        <li>业务数据：你输入的需求文本、澄清回答、修订记录、导出操作日志。</li>
-        <li>技术数据：请求 ID、任务 ID、设备指纹、IP、错误日志与性能指标。</li>
+        <li><strong>账号信息</strong>：邮箱、密码哈希、登录时间、账户状态。</li>
+        <li><strong>业务数据</strong>：需求输入、澄清回答、生成文档、标注修订记录、导出行为记录。</li>
+        <li><strong>技术与安全数据</strong>：请求 ID、任务 ID、设备指纹、IP 地址、浏览器信息、错误日志、性能指标。</li>
+        <li><strong>支付状态数据</strong>：订阅状态、支付结果回调标识（不保存完整银行卡信息）。</li>
       </ul>
 
       <h2>2. 使用目的</h2>
       <ul>
-        <li>提供生成、修订、导出等核心功能。</li>
-        <li>完成订阅鉴权、支付对账与风控。</li>
-        <li>定位故障、优化模型效果与服务稳定性。</li>
+        <li>提供文档生成、修订、导出、账号管理等核心功能。</li>
+        <li>执行订阅鉴权、支付状态同步与风控控制。</li>
+        <li>定位故障、优化模型输出质量与平台稳定性。</li>
+        <li>满足必要的合规审计与争议处理需求。</li>
       </ul>
 
       <h2>3. 第三方服务</h2>
       <ul>
-        <li>支付由 Paddle 处理，相关支付信息遵循 Paddle 政策。</li>
-        <li>模型推理调用第三方 AI 服务商接口。</li>
+        <li>支付环节由 Paddle（Merchant of Record）处理，支付和税务以其规则为准。</li>
+        <li>模型推理请求通过第三方 AI 服务商接口处理。</li>
+        <li>邮件发送与密码找回流程使用邮件服务商（如 Resend）发送事务通知。</li>
       </ul>
+      <p>上述第三方可能在其服务区域内处理必要数据，你使用本服务即表示同意按本政策执行该处理流程。</p>
 
       <h2>4. 数据安全与保留</h2>
-      <p>我们采用访问控制、日志追踪和密钥管理来保护数据。仅在实现服务目的所需期限内保留数据，超过期限将清理或匿名化。</p>
+      <p>
+        我们使用访问控制、密钥管理、最小权限、日志追踪等措施保护数据。你提交的业务内容仅用于服务本身，不用于公开展示。
+        数据保留周期遵循“最小必要”原则，超过业务或合规需要后将删除或匿名化处理。
+      </p>
 
-      <h2>5. 你的权利</h2>
-      <p>你可申请查询、导出或删除账号相关数据。请通过邮箱联系我们处理。</p>
+      <h2>5. Cookie 与本地存储</h2>
+      <p>
+        本服务可能使用 Cookie 或本地存储（如 <code>localStorage</code>）保存登录状态、编辑草稿和任务恢复信息，
+        以支持页面刷新后继续编辑。你可通过浏览器设置清理相关数据。
+      </p>
 
-      <h2>6. 联系方式</h2>
-      <p>联系邮箱：<a href="mailto:support@requirement-web.ai">support@requirement-web.ai</a></p>
+      <h2>6. 你的权利</h2>
+      <p>在适用法律允许范围内，你可申请查询、更正、导出或删除与账号相关的数据。我们会在核验身份后处理你的请求。</p>
+
+      <h2>7. 政策更新</h2>
+      <p>当政策有实质更新时，我们会在站内页面更新“更新日期”，必要时通过站内提示或邮件通知。</p>
+
+      <h2>8. 联系方式</h2>
+      <p>联系邮箱：<a href="mailto:support@reqmd.com">support@reqmd.com</a></p>
+      <p><a href="/">返回首页</a></p>
     </main>
   </body>
-  </html>
+</html>

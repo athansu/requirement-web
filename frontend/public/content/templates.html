@@ -4,13 +4,18 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>模板中心 - AI Requirement Studio</title>
-    <meta name="description" content="需求模板库：AI 网站、后台系统、游戏应用等可直接复用的需求输入模板。" />
+    <meta
+      name="description"
+      content="需求模板中心：提供可直接复用的一句话输入模板与澄清建议，帮助快速生成可执行的需求 Markdown。"
+    />
     <style>
       body { margin: 0; font-family: "PingFang SC","Segoe UI",sans-serif; background: #0a1017; color: #edf4ff; }
       main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.8; }
       h1 { margin-top: 0; font-size: 34px; }
       h2 { margin-top: 28px; font-size: 22px; }
+      h3 { margin-top: 18px; font-size: 18px; color: #dbe9ff; }
       p, li { color: #b5c8e5; }
+      .panel { border: 1px solid #2b3d55; border-radius: 12px; padding: 14px; margin-top: 10px; background: rgba(17, 28, 42, 0.78); }
       code { color: #ffd166; }
       a { color: #7fd9ff; }
     </style>
@@ -18,14 +23,63 @@
   <body>
     <main>
       <h1>模板中心</h1>
-      <p>复制以下一句话模板到首页输入框，可快速进入澄清与生成流程。</p>
-      <h2>AI 网站模板</h2>
+      <p>复制任一模板到首页输入框，可快速进入澄清与生成流程。建议先用一句话描述“目标 + 用户 + 场景”，再回答澄清问题补齐边界。</p>
+
+      <h2>模板使用方法</h2>
+      <div class="panel">
+        <ol>
+          <li>先复制“基础输入模板”。</li>
+          <li>把你项目的行业、目标用户、核心流程替换进去。</li>
+          <li>澄清问题阶段优先回答：范围、约束、验收标准。</li>
+          <li>生成后做 3-5 处标注修订，再导出 Markdown 给 AI Coding。</li>
+        </ol>
+      </div>
+
+      <h2>模板一：AI 工具网站</h2>
+      <h3>基础输入模板</h3>
       <p><code>做一个面向中小团队的 AI 工作台，支持知识库问答、任务管理和协作审批。</code></p>
-      <h2>后台系统模板</h2>
+      <h3>建议补充</h3>
+      <ul>
+        <li>首批目标用户是谁（运营、产品、销售等）。</li>
+        <li>必须支持的模型与数据源范围。</li>
+        <li>权限角色与审计要求。</li>
+      </ul>
+
+      <h2>模板二：管理后台系统</h2>
+      <h3>基础输入模板</h3>
       <p><code>做一个可配置的订单管理后台，支持多角色权限、流程审批和审计日志。</code></p>
-      <h2>小游戏应用模板</h2>
+      <h3>建议补充</h3>
+      <ul>
+        <li>核心对象（订单、客户、库存、工单等）和状态流转。</li>
+        <li>必须有的审批节点和驳回规则。</li>
+        <li>性能指标（列表查询、导出上限、响应时延）。</li>
+      </ul>
+
+      <h2>模板三：小游戏应用</h2>
+      <h3>基础输入模板</h3>
       <p><code>做一个轻量小游戏合集 App，支持即点即玩、广告变现和本地进度保存。</code></p>
+      <h3>建议补充</h3>
+      <ul>
+        <li>目标机型和系统版本范围（iOS/Android）。</li>
+        <li>MVP 必做功能与不做项。</li>
+        <li>广告触发时机和频次上限。</li>
+      </ul>
+
+      <h2>模板四：AI Coding 辅助平台</h2>
+      <h3>基础输入模板</h3>
+      <p><code>做一个让用户通过澄清问答生成可执行需求 Markdown，并支持标注修订与导出的平台。</code></p>
+      <h3>建议补充</h3>
+      <ul>
+        <li>你的主要用户是独立开发者还是团队协作场景。</li>
+        <li>是否需要账号体系、订阅、导出权限控制。</li>
+        <li>希望导出到哪些 IDE（Cursor、Claude Code、Copilot）。</li>
+      </ul>
+
+      <p>
+        需要行业专用模板（电商、教育、医疗、企业服务）可联系
+        <a href="mailto:support@reqmd.com">support@reqmd.com</a>。
+      </p>
       <p><a href="/">返回首页</a></p>
     </main>
   </body>
-  </html>
+</html>

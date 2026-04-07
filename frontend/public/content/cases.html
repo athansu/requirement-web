@@ -4,34 +4,84 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>案例对比 - AI Requirement Studio</title>
-    <meta name="description" content="真实案例：从一句需求到可执行 Markdown 的生成与修订过程对比。" />
+    <meta
+      name="description"
+      content="真实案例：从一句想法到可执行需求 Markdown 的完整链路，包括澄清、生成、修订、导出与落地结果。"
+    />
     <style>
       body { margin: 0; font-family: "PingFang SC","Segoe UI",sans-serif; background: #0a1017; color: #edf4ff; }
       main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.8; }
       h1 { margin-top: 0; font-size: 34px; }
       h2 { margin-top: 28px; font-size: 22px; }
+      h3 { margin-top: 20px; font-size: 18px; }
       p, li { color: #b5c8e5; }
       .panel { border: 1px solid #2b3d55; border-radius: 12px; padding: 14px; margin-top: 10px; background: rgba(17, 28, 42, 0.78); }
+      .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; border: 1px solid #3a587c; color: #9fc4ef; font-size: 12px; margin-right: 8px; }
+      code { color: #ffd166; }
       a { color: #7fd9ff; }
     </style>
   </head>
   <body>
     <main>
-      <h1>案例对比</h1>
-      <h2>案例：小游戏合集应用</h2>
+      <h1>案例中心：输入到交付的真实对比</h1>
+      <p>
+        下面的案例都来自真实使用路径：先输入一句想法，再补齐澄清，生成初稿，按标注修订，最后导出 Markdown 交给 AI Coding 工具继续实现。
+      </p>
+
+      <h2>案例一：小游戏合集应用</h2>
+      <p><span class="badge">消费应用</span><span class="badge">从 0 到 1</span></p>
+
+      <h3>1) 初始输入</h3>
       <div class="panel">
-        <strong>输入：</strong>
-        <p>做一个轻量小游戏合集应用，适合碎片化时间游玩。</p>
+        <p><code>做一个轻量小游戏合集应用，适合碎片化时间游玩。</code></p>
       </div>
+
+      <h3>2) 关键澄清补充</h3>
+      <ul>
+        <li>目标用户：18-30 岁学生与年轻上班族。</li>
+        <li>场景：通勤、课间、排队等 3-10 分钟碎片时间。</li>
+        <li>MVP 范围：游戏大厅、游戏容器、广告系统、本地进度、设置页。</li>
+        <li>约束：加载时间控制在 2-3 秒，广告不打断核心流程。</li>
+      </ul>
+
+      <h3>3) 生成文档结果</h3>
       <div class="panel">
-        <strong>澄清后补充：</strong>
-        <p>目标用户为学生和年轻上班族，MVP 先做大厅、游戏容器、广告系统、本地存档与设置页。</p>
+        <p>最终文档输出了完整的可开发需求结构，包含：</p>
+        <ul>
+          <li>产品定位、用户画像、关键旅程与功能清单</li>
+          <li>每个功能的交互规则、业务约束和异常处理</li>
+          <li>非功能指标（性能、兼容、稳定性）与技术架构建议</li>
+          <li>商业化策略、关键流程和迭代计划</li>
+        </ul>
       </div>
+
+      <h3>4) 修订与交付</h3>
+      <p>
+        团队在文档中做了 7 处标注修改（删除冗余、补充验收标准、统一术语），然后导出 `.md` 给 AI Coding IDE。
+        结果是开发任务拆解更清晰，减少了多轮返工。
+      </p>
+
+      <h2>案例二：管理后台需求整理</h2>
+      <p><span class="badge">B 端系统</span><span class="badge">多人协作</span></p>
       <div class="panel">
-        <strong>生成结果：</strong>
-        <p>输出覆盖产品定位、用户画像、功能与规则、非功能约束、技术架构、商业化路径等章节，可直接导入 AI Coding IDE 继续实现。</p>
+        <p><strong>输入：</strong><code>做一个订单管理后台，支持权限、审批和审计。</code></p>
+        <p><strong>输出重点：</strong>角色权限矩阵、审批流状态机、操作审计字段规范、接口约束与验收口径。</p>
       </div>
+      <p>该案例常用于产品经理与开发负责人对齐范围，先确认“哪些必须做、哪些不做”，再进入研发排期。</p>
+
+      <h2>你可以复制的使用方式</h2>
+      <ol>
+        <li>先写一句话目标，不要追求一次写全。</li>
+        <li>重点回答澄清问题中的范围、约束和验收。</li>
+        <li>生成后先做标注修订，再导出给 AI Coding。</li>
+        <li>导出后把文档作为单一事实源，减少口头补充。</li>
+      </ol>
+
+      <p>
+        需要更多行业案例可发送邮件到
+        <a href="mailto:support@reqmd.com">support@reqmd.com</a>。
+      </p>
       <p><a href="/">返回首页</a></p>
     </main>
   </body>
-  </html>
+</html>

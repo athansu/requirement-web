@@ -4,29 +4,84 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>功能介绍 - AI Requirement Studio</title>
-    <meta name="description" content="一句话需求到可执行 Markdown：动态澄清、主生成、标注修订、全篇修复和导出。" />
+    <meta
+      name="description"
+      content="把一句模糊想法转成可直接用于 AI Coding 的需求 Markdown：动态澄清、质量生成、标注修订、全篇修复、订阅导出。"
+    />
     <style>
       body { margin: 0; font-family: "PingFang SC","Segoe UI",sans-serif; background: #0a1017; color: #edf4ff; }
       main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.8; }
       h1 { margin-top: 0; font-size: 34px; }
       h2 { margin-top: 28px; font-size: 22px; }
+      h3 { margin-top: 20px; font-size: 18px; color: #dbe9ff; }
       p, li { color: #b5c8e5; }
+      .panel { border: 1px solid #2b3d55; border-radius: 12px; padding: 14px 16px; margin-top: 10px; background: rgba(17, 28, 42, 0.78); }
+      .hint { color: #8fb2d7; font-size: 14px; }
+      code { color: #ffd166; }
       a { color: #7fd9ff; }
     </style>
   </head>
   <body>
     <main>
-      <h1>功能介绍：一句话需求到可执行 Markdown</h1>
-      <p>AI Requirement Studio 用于把模糊想法快速落成可开发需求文档，适配 AI Coding IDE 场景。</p>
+      <h1>功能介绍：一句话想法到可执行需求文档</h1>
+      <p>
+        AI Requirement Studio 面向 AI Coding 场景设计，不是普通“文案生成器”。它的目标是让你把一个模糊想法，
+        变成一份可以直接给 Cursor、Claude Code、Copilot 等工具继续实现的结构化 Markdown。
+      </p>
+
+      <h2>要解决的核心问题</h2>
+      <div class="panel">
+        <ul>
+          <li>想法输入太短，直接让 AI 写代码会反复返工，需求边界经常变化。</li>
+          <li>需求文档没有验收口径，开发阶段容易“看起来做了，结果不对”。</li>
+          <li>每次修改需求都要整篇重写，版本很快失控。</li>
+        </ul>
+      </div>
+
       <h2>核心能力</h2>
       <ul>
-        <li>动态澄清（3-5问）：补齐业务目标、范围边界、技术约束、验收条件。</li>
-        <li>主生成：输出完整结构化需求 Markdown。</li>
-        <li>按标注修订：支持修改、删除、补充三类动作。</li>
-        <li>全篇修复：在局部修订后做全局一致性修复。</li>
-        <li>导出门禁：订阅用户一键导出 .md 继续开发。</li>
+        <li><strong>动态澄清（3-5问）</strong>：针对你的输入补齐目标、范围、约束、验收，不再固定模板提问。</li>
+        <li><strong>质量优先主生成</strong>：生成 9 章结构化需求文档，优先可读性和可执行细节。</li>
+        <li><strong>按标注修订</strong>：支持“修改 / 删除 / 补充”三种动作，先命中局部再考虑全篇修复。</li>
+        <li><strong>全篇修复</strong>：你手动触发后，系统对术语、规则、验收口径做一致性联动。</li>
+        <li><strong>订阅导出</strong>：免费可体验生成与修订，导出 `.md` 时按订阅规则校验。</li>
       </ul>
+
+      <h2>标准使用流程</h2>
+      <ol>
+        <li>输入一句话需求与场景。</li>
+        <li>回答关键澄清问题（可跳过非关键项）。</li>
+        <li>生成首稿并进入文档编辑。</li>
+        <li>在文档中做标注修订，必要时触发全篇修复。</li>
+        <li>确认后导出 Markdown 到 AI Coding IDE 执行。</li>
+      </ol>
+
+      <h2>输出文档包含什么</h2>
+      <div class="panel">
+        <p>默认输出 9 个章节，重点覆盖：</p>
+        <ul>
+          <li>产品定位、用户画像、核心旅程</li>
+          <li>功能列表、功能细则、非功能需求</li>
+          <li>技术架构建议、AI 使用点、商业化路径</li>
+        </ul>
+        <p class="hint">每章会尽量包含：实现要点 / 约束规则 / 验收标准 / 默认假设（按信息充分度动态决定）。</p>
+      </div>
+
+      <h2>适用场景</h2>
+      <ul>
+        <li>0-1 产品需求梳理（Web 应用、管理后台、AI 工具、小游戏等）。</li>
+        <li>需求频繁变更的项目，先稳定文档再生成代码。</li>
+        <li>外包协作或团队分工，需要统一口径的需求基线。</li>
+      </ul>
+
+      <h2>联系我们</h2>
+      <p>
+        你可以把效果问题和功能建议发到
+        <a href="mailto:support@reqmd.com">support@reqmd.com</a>，
+        我们会按问题优先级持续迭代。
+      </p>
+
       <p><a href="/">返回首页</a></p>
     </main>
   </body>
-  </html>
+</html>
