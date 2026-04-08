@@ -1,7 +1,8 @@
 const API_BASE = import.meta.env.VITE_API_BASE?.trim() || '/api';
 const API_TIMEOUT_MS = Math.max(Number(import.meta.env.VITE_API_TIMEOUT_MS) || 300000, 1000);
 const CLARIFY_TIMEOUT_MS = Math.max(Number(import.meta.env.VITE_CLARIFY_TIMEOUT_MS) || 45000, 3000);
-const CREATE_JOB_TIMEOUT_MS = Math.max(Number(import.meta.env.VITE_CREATE_JOB_TIMEOUT_MS) || 15000, 3000);
+const CREATE_JOB_TIMEOUT_MS = Math.max(Number(import.meta.env.VITE_CREATE_JOB_TIMEOUT_MS) || 45000, 3000);
+const CREATE_JOB_RETRY_DELAY_MS = 900;
 const JOB_STATUS_TIMEOUT_MS = Math.max(Number(import.meta.env.VITE_JOB_STATUS_TIMEOUT_MS) || 15000, 3000);
 const AUTH_STORAGE_KEY = 'requirement-website.auth.v1';
 const DEVICE_FINGERPRINT_KEY = 'requirement-website.device-fingerprint.v1';
@@ -15,6 +16,10 @@ const ANON_FRIENDLY_PATHS = [
 type StoredAuth = {
   accessToken: string;
   refreshToken: string;
+};
+
+type RequestOptions = {
+  headers?: Record<string, string>;
 };
 
 function isAbortError(error: unknown): boolean {
@@ -73,6 +78,39 @@ function getOrCreateDeviceFingerprint(): string {
   return generated;
 }
 
+function createClientRequestId(prefix: string): string {
+  const suffix = typeof crypto !== 'undefined' && crypto.randomUUID
+    ? crypto.randomUUID()
+    : `${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  return `${prefix}_${suffix}`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+let lastApiPrewarmAt = 0;
+
+async function prewarmApi(timeoutMs = 8000, force = false): Promise<void> {
+  if (typeof window === 'undefined') return;
+  const now = Date.now();
+  if (!force && now - lastApiPrewarmAt < 30000) return;
+  lastApiPrewarmAt = now;
+  try {
+    await get('/ready', timeoutMs);
+  } catch {
+    // Best-effort only; the actual request will surface a user-facing error if needed.
+  }
+}
+
+function isTransientCreateJobError(error: unknown): boolean {
+  if (error instanceof ApiError) {
+    return error.status === 408 || error.status >= 500;
+  }
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /网络连接异常|请求超时|failed to fetch|load failed|fetch failed/i.test(message);
+}
+
 export function getAuthTokens() {
   return authState;
 }
@@ -87,7 +125,7 @@ export function setAuthTokens(next: StoredAuth | null) {
   window.localStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(next));
 }
 
-async function post<T>(path: string, body: object, timeoutMs = API_TIMEOUT_MS): Promise<T> {
+async function post<T>(path: string, body: object, timeoutMs = API_TIMEOUT_MS, options: RequestOptions = {}): Promise<T> {
   const controller = new AbortController();
   const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
   let res: Response;
@@ -100,6 +138,7 @@ async function post<T>(path: string, body: object, timeoutMs = API_TIMEOUT_MS): 
       headers: {
         'Content-Type': 'application/json',
         ...(fingerprint ? { 'x-device-fingerprint': fingerprint } : {}),
+        ...(options.headers || {}),
         ...(authState?.accessToken ? { Authorization: `Bearer ${authState.accessToken}` } : {}),
       },
       body: JSON.stringify(body),
@@ -116,6 +155,7 @@ async function post<T>(path: string, body: object, timeoutMs = API_TIMEOUT_MS): 
       headers: {
         'Content-Type': 'application/json',
         ...(fingerprint ? { 'x-device-fingerprint': fingerprint } : {}),
+        ...(options.headers || {}),
       },
       body: JSON.stringify(body),
       signal: controller.signal,
@@ -356,6 +396,7 @@ export interface AuthRes {
     period: string;
   };
   message?: string;
+  resetCode?: string;
 }
 
 export interface BillingPlansRes {
@@ -526,16 +567,31 @@ export function getClarificationQuestions(userRequirement: string, scenario?: st
   }, CLARIFY_TIMEOUT_MS);
 }
 
-export function generateDocument(
+export async function generateDocument(
   userRequirement: string,
   clarificationAnswers?: { q: string; a: string }[],
   scenario?: string
 ): Promise<GenerateJobCreateRes> {
-  return post<GenerateJobCreateRes>('/document/generate', {
+  const body = {
     userRequirement,
     ...(clarificationAnswers?.length ? { clarificationAnswers } : {}),
     ...(scenario ? { scenario } : {}),
-  }, CREATE_JOB_TIMEOUT_MS);
+  };
+  const idempotencyKey = createClientRequestId('generate');
+
+  await prewarmApi();
+  try {
+    return await post<GenerateJobCreateRes>('/document/generate', body, CREATE_JOB_TIMEOUT_MS, {
+      headers: { 'x-idempotency-key': idempotencyKey },
+    });
+  } catch (error) {
+    if (!isTransientCreateJobError(error)) throw error;
+    await sleep(CREATE_JOB_RETRY_DELAY_MS);
+    await prewarmApi(10000, true);
+    return post<GenerateJobCreateRes>('/document/generate', body, Math.max(CREATE_JOB_TIMEOUT_MS, 60000), {
+      headers: { 'x-idempotency-key': idempotencyKey },
+    });
+  }
 }
 
 export async function getGenerateJobStatus(jobId: string): Promise<GenerateJobStatusRes> {
@@ -607,6 +663,14 @@ export async function login(email: string, password: string): Promise<AuthRes> {
     setAuthTokens({ accessToken: res.accessToken, refreshToken: res.refreshToken });
   }
   return res;
+}
+
+export function forgotPassword(email: string): Promise<AuthRes> {
+  return post<AuthRes>('/auth/forgot-password', { email }, API_TIMEOUT_MS);
+}
+
+export function resetPassword(email: string, resetCode: string, newPassword: string): Promise<AuthRes> {
+  return post<AuthRes>('/auth/reset-password', { email, resetCode, newPassword }, API_TIMEOUT_MS);
 }
 
 export async function refreshAuth(): Promise<AuthRes> {

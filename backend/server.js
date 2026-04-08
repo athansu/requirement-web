@@ -2209,9 +2209,64 @@ async function requestLLMWithBudgetAndFallback(messages, options, context = {}) 
 const generationJobs = new Map();
 const generationQueue = [];
 let processingGenerationQueue = false;
+const GENERATE_IDEMPOTENCY_TTL_MS = Math.max(Number(process.env.GENERATE_IDEMPOTENCY_TTL_MS) || 15 * 60 * 1000, 60 * 1000);
+const generationIdempotencyKeys = new Map();
 const reviseConsistencyJobs = new Map();
 const reviseConsistencyQueue = [];
 let processingReviseConsistencyQueue = false;
+
+function cleanupGenerationIdempotencyKeys(now = Date.now()) {
+  for (const [key, item] of generationIdempotencyKeys.entries()) {
+    if (!item?.jobId || item.expiresAt <= now || !generationJobs.has(item.jobId)) {
+      generationIdempotencyKeys.delete(key);
+    }
+  }
+}
+
+function getGenerateIdempotencyScope(req) {
+  const userId = req.authUser?.id;
+  if (userId) return `user:${userId}`;
+  const fingerprint = getDeviceFingerprint(req) || 'no-fingerprint';
+  return `anon:${fingerprint}:${getClientIp(req)}`;
+}
+
+function getGenerateIdempotencyKey(req) {
+  const raw = sanitizeText(req.headers?.['x-idempotency-key'] || '', 160);
+  if (!raw) return '';
+  return `${getGenerateIdempotencyScope(req)}:${raw}`;
+}
+
+function buildGenerationJobCreateResponse(job, req, userId) {
+  const planInfo = resolveRequestPlanInfo(req);
+  return {
+    success: true,
+    jobId: job.id,
+    status: job.status,
+    lifecycle: job.lifecycle,
+    stage: job.stage,
+    outputLevel: job.outputLevel,
+    progress: job.progress,
+    stageProgress: job.stageProgress,
+    overallProgress: job.overallProgress,
+    step: job.step,
+    elapsedMs: job.elapsedMs,
+    remainingMs: job.remainingMs,
+    attempt: job.attempt,
+    maxAttempts: job.maxAttempts,
+    lastError: job.lastError,
+    document: job.latestDocumentSnapshot || '',
+    fallbackAttempts: job.fallbackAttempts,
+    missingSections: job.missingSections,
+    missingSectionIds: job.missingSectionIds || [],
+    weakSectionIds: job.weakSectionIds || [],
+    invalidSectionIds: job.invalidSectionIds || [],
+    completionScore: Number.isFinite(job.completionScore) ? job.completionScore : 0,
+    qualityWarnings: Array.isArray(job.qualityWarnings) ? job.qualityWarnings : [],
+    plan: planInfo.plan,
+    quotaRemaining: userId ? getQuotaRemaining(userId) : planInfo.quotaRemaining,
+    entitlements: planInfo.entitlements,
+  };
+}
 
 function cleanupGenerationJobs() {
   const now = Date.now();
@@ -2222,12 +2277,16 @@ function cleanupGenerationJobs() {
     }
   }
 
-  if (generationJobs.size <= MAX_GENERATE_JOBS) return;
+  if (generationJobs.size <= MAX_GENERATE_JOBS) {
+    cleanupGenerationIdempotencyKeys(now);
+    return;
+  }
   const byUpdatedAt = [...generationJobs.entries()].sort((a, b) => a[1].updatedAt - b[1].updatedAt);
   const overflow = generationJobs.size - MAX_GENERATE_JOBS;
   for (let i = 0; i < overflow; i += 1) {
     generationJobs.delete(byUpdatedAt[i][0]);
   }
+  cleanupGenerationIdempotencyKeys(now);
 }
 
 function cleanupReviseConsistencyJobs() {
@@ -3572,6 +3631,17 @@ app.post('/api/document/generate', attachOptionalAuth, attachPlanInfo, asyncRout
     return res.status(400).json({ success: false, message: '缺少 userRequirement' });
   }
   const userId = req.authUser?.id;
+  cleanupGenerationIdempotencyKeys();
+  const idempotencyKey = getGenerateIdempotencyKey(req);
+  if (idempotencyKey) {
+    const existingEntry = generationIdempotencyKeys.get(idempotencyKey);
+    const existingJob = existingEntry?.jobId ? generationJobs.get(existingEntry.jobId) : null;
+    if (existingJob) {
+      req.jobId = existingJob.id;
+      return res.status(202).json(buildGenerationJobCreateResponse(existingJob, req, userId));
+    }
+    generationIdempotencyKeys.delete(idempotencyKey);
+  }
   const estimatedTokens =
     estimateTokensFromText(userRequirement)
     + estimateTokensFromText(scenario)
@@ -3613,35 +3683,13 @@ app.post('/api/document/generate', attachOptionalAuth, attachPlanInfo, asyncRout
     scenario,
   });
   req.jobId = job.id;
-  const planInfo = resolveRequestPlanInfo(req);
-  return res.status(202).json({
-    success: true,
-    jobId: job.id,
-    status: job.status,
-    lifecycle: job.lifecycle,
-    stage: job.stage,
-    outputLevel: job.outputLevel,
-    progress: job.progress,
-    stageProgress: job.stageProgress,
-    overallProgress: job.overallProgress,
-    step: job.step,
-    elapsedMs: job.elapsedMs,
-    remainingMs: job.remainingMs,
-    attempt: job.attempt,
-    maxAttempts: job.maxAttempts,
-    lastError: job.lastError,
-    document: job.latestDocumentSnapshot || '',
-    fallbackAttempts: job.fallbackAttempts,
-    missingSections: job.missingSections,
-    missingSectionIds: job.missingSectionIds || [],
-    weakSectionIds: job.weakSectionIds || [],
-    invalidSectionIds: job.invalidSectionIds || [],
-    completionScore: Number.isFinite(job.completionScore) ? job.completionScore : 0,
-    qualityWarnings: Array.isArray(job.qualityWarnings) ? job.qualityWarnings : [],
-    plan: planInfo.plan,
-    quotaRemaining: userId ? getQuotaRemaining(userId) : planInfo.quotaRemaining,
-    entitlements: planInfo.entitlements,
-  });
+  if (idempotencyKey) {
+    generationIdempotencyKeys.set(idempotencyKey, {
+      jobId: job.id,
+      expiresAt: Date.now() + GENERATE_IDEMPOTENCY_TTL_MS,
+    });
+  }
+  return res.status(202).json(buildGenerationJobCreateResponse(job, req, userId));
 }));
 
 app.get('/api/document/generate/:jobId', attachOptionalAuth, attachPlanInfo, asyncRoute(async (req, res) => {
