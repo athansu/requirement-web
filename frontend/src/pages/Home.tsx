@@ -12,14 +12,12 @@ const FALLBACK_QUESTIONS = [
   '目标用户主要是谁？有哪些典型使用场景？',
   '首期必须上线的核心功能有哪些？优先级如何？',
   '是否有现成系统、接口或数据需要对接？',
-  '预期上线时间或重要里程碑（如 MVP 范围）？',
-  '技术栈、预算或资源有无限制？是否有商业化/变现考虑？',
 ];
 
 const HOME_FEATURES = [
-  '先澄清再生成，减少 AI Coding IDE 中反复重写',
-  '支持按标注修订与全篇修复，持续迭代 Markdown 需求',
-  '导出 .md 后可直接回到 AI Coding IDE 继续开发',
+  '创业者：把一个想法转成可直接交给 Codex / Cursor 执行的 spec',
+  '产品经理：把口头需求转成结构化 PRD 与验收标准',
+  '独立开发者 / AI coding 用户：减少反复对话和返工，直接进入实现',
 ];
 
 const WORKFLOW_STEPS = [
@@ -61,7 +59,7 @@ const SCENARIOS = [
 ];
 
 interface HomeProps {
-  onGenerate: (userRequirement: string, document: string) => void;
+  onGenerate: (userRequirement: string, document: string, options?: { scenario?: string; templateSlug?: string }) => void;
 }
 
 type Step = 'input' | 'clarify' | 'generating';
@@ -75,6 +73,20 @@ const POLL_TRANSIENT_ERROR_MAX = 8;
 const POLL_TRANSIENT_BACKOFF_MS = 1500;
 const GENERATE_MAX_WAIT_MS = Math.max(Number(import.meta.env.VITE_GENERATE_MAX_WAIT_MS) || 540000, 60000);
 const ZERO_BUDGET_GRACE_MS = 30000;
+const TEMPLATE_QUERY_TRACK_KEY = 'requirement-website.template-query-tracked.v1';
+
+const normalizeClarifyQuestions = (raw: unknown): string[] => {
+  if (!Array.isArray(raw)) return [];
+  const deduped: string[] = [];
+  for (const item of raw) {
+    const q = typeof item === 'string' ? item.trim() : '';
+    if (!q) continue;
+    if (!deduped.includes(q)) deduped.push(q);
+    if (deduped.length >= 5) break;
+  }
+  if (deduped.length < 3) return [];
+  return deduped;
+};
 
 function stageLabel(stage: string | undefined) {
   switch (stage) {
@@ -200,12 +212,39 @@ export function Home({ onGenerate }: HomeProps) {
   const [weakSectionIds, setWeakSectionIds] = useState<number[]>(initialState.weakSectionIds);
   const [completionScore, setCompletionScore] = useState(initialState.completionScore);
   const [qualityWarnings, setQualityWarnings] = useState<string[]>(initialState.qualityWarnings);
+  const [templateSlug, setTemplateSlug] = useState('');
   const requirement = input.trim();
 
   useEffect(() => {
     if (visitTrackedRef.current) return;
     visitTrackedRef.current = true;
     trackEvent('visit', { page: 'home' }).catch(() => undefined);
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const template = (params.get('template') || '').trim();
+    const queryText = (params.get('q') || '').trim();
+    const scenarioFromQuery = (params.get('scenario') || '').trim();
+    if (queryText) {
+      setInput(queryText);
+    }
+    if (scenarioFromQuery && SCENARIOS.includes(scenarioFromQuery)) {
+      setScenario(scenarioFromQuery);
+    }
+    if (template) {
+      setTemplateSlug(template);
+      const trackedMark = `${template}:${queryText}:${scenarioFromQuery}`;
+      const seen = window.localStorage.getItem(TEMPLATE_QUERY_TRACK_KEY);
+      if (seen !== trackedMark) {
+        trackEvent('template_use', {
+          source: 'home_query_prefill',
+          template,
+        }).catch(() => undefined);
+        window.localStorage.setItem(TEMPLATE_QUERY_TRACK_KEY, trackedMark);
+      }
+    }
   }, []);
 
   useEffect(() => {
@@ -334,7 +373,7 @@ export function Home({ onGenerate }: HomeProps) {
       window.localStorage.removeItem(HOME_STORAGE_KEY);
     }
     trackEvent('enter_editor', { source: 'generate_success' }).catch(() => undefined);
-    onGenerate(requirement, doc.trim());
+    onGenerate(requirement, doc.trim(), { scenario, templateSlug });
   };
 
   const pollGenerateJob = async (jobId: string) => {
@@ -456,23 +495,12 @@ export function Home({ onGenerate }: HomeProps) {
     setLoading(true);
     try {
       const res = await getClarificationQuestions(requirement, scenario);
-      const validApiQuestions =
-        Array.isArray(res.questions)
-          ? res.questions
-              .map((q) => (typeof q === 'string' ? q.trim() : ''))
-              .filter((q) => q.length > 0)
-          : [];
-      const mergedQuestions = [...validApiQuestions];
-      for (const fallback of FALLBACK_QUESTIONS) {
-        if (mergedQuestions.length >= 5) break;
-        if (!mergedQuestions.includes(fallback)) {
-          mergedQuestions.push(fallback);
-        }
-      }
-      setQuestions(mergedQuestions.slice(0, 5));
+      const validApiQuestions = normalizeClarifyQuestions(res.questions);
+      const shouldUseFallback = validApiQuestions.length === 0;
+      setQuestions(shouldUseFallback ? FALLBACK_QUESTIONS : validApiQuestions);
       setAnswers({});
       setStep('clarify');
-      if (!res.success) {
+      if (!res.success || shouldUseFallback) {
         setError(res.message || '未获取到澄清问题，将使用默认问题');
       }
     } catch (e) {
@@ -605,7 +633,7 @@ export function Home({ onGenerate }: HomeProps) {
               <span className="home-badge">Step 2</span>
               <h1 className="home-title small">补齐关键信息</h1>
               <p className="home-subtitle">
-                回答越完整，生成的需求 Markdown 越接近可直接进入 AI Coding IDE 开发的版本。
+                系统会动态提出 3-5 个实现导向问题。回答越完整，输出越接近可直接进入 AI Coding IDE 开发的版本。
               </p>
             </div>
             <button className="btn-secondary" onClick={backToInput} disabled={loading}>
@@ -715,7 +743,7 @@ export function Home({ onGenerate }: HomeProps) {
                     className="btn-primary"
                     onClick={() => {
                       trackEvent('enter_editor', { source: 'step3_draft' }).catch(() => undefined);
-                      onGenerate(requirement, draftDocument);
+                      onGenerate(requirement, draftDocument, { scenario, templateSlug });
                     }}
                   >
                     进入编辑
@@ -772,7 +800,7 @@ export function Home({ onGenerate }: HomeProps) {
                     className="btn-secondary"
                     onClick={() => {
                       trackEvent('enter_editor', { source: 'step3_error_draft' }).catch(() => undefined);
-                      onGenerate(requirement, draftDocument);
+                      onGenerate(requirement, draftDocument, { scenario, templateSlug });
                     }}
                   >
                     进入编辑
@@ -791,9 +819,9 @@ export function Home({ onGenerate }: HomeProps) {
       <div className="home-hero">
         <div className="home-copy">
           <span className="home-badge">AI Requirement Studio</span>
-          <h1 className="home-title">把一句模糊想法，变成可持续修订的需求 Markdown。</h1>
+          <h1 className="home-title">把模糊想法，变成可直接交给 AI Coding 执行的需求文档。</h1>
           <p className="home-subtitle">
-            面向 AI Coding IDE：从一句想法出发，快速得到可编辑初稿，并在同一页面持续修订。
+            不是继续和聊天窗口来回拉扯，而是先澄清边界、再生成结构化文档、再按标注持续修订，最后导出给 Codex / Cursor / Claude Code 直接开工。
           </p>
 
           <div className="feature-list">
@@ -805,12 +833,12 @@ export function Home({ onGenerate }: HomeProps) {
           </div>
           <div className="home-info-grid">
             <article className="home-info-card">
-              <h3>解决的痛点</h3>
-              <p>AI Coding IDE 一次生成的需求 md 往往难以持续修改。这里把“澄清、生成、标注修订、全篇修复”放进同一流程，减少整篇重写。</p>
+              <h3>和直接聊天的区别</h3>
+              <p>直接聊天容易散，关键约束和验收标准经常遗漏。ReqMD 把需求固定成可复用结构，支持按标注修订，不会每次都从头重写。</p>
             </article>
             <article className="home-info-card">
-              <h3>如何使用</h3>
-              <p>输入一句想法 → 回答澄清问题 → 生成初稿 → 按标注修订/全篇修复 → 导出 Markdown 继续开发。</p>
+              <h3>为什么值得注册和付费</h3>
+              <p>登录后可保存历史、继续修订、复用模板；免费可导出 3 次，超出后订阅继续使用，适合高频 AI coding 需求交付。</p>
             </article>
           </div>
           {activeJobId && (
@@ -838,7 +866,7 @@ export function Home({ onGenerate }: HomeProps) {
                     className="btn-secondary"
                     onClick={() => {
                       trackEvent('enter_editor', { source: 'home_resume_draft' }).catch(() => undefined);
-                      onGenerate(requirement, draftDocument);
+                      onGenerate(requirement, draftDocument, { scenario, templateSlug });
                     }}
                   >
                     先进入文档编辑
@@ -881,6 +909,11 @@ export function Home({ onGenerate }: HomeProps) {
             onChange={(e) => setInput(e.target.value)}
             disabled={loading}
           />
+          {templateSlug && (
+            <p className="home-entry-hint" style={{ marginTop: 8 }}>
+              已应用模板：{templateSlug}
+            </p>
+          )}
 
           {error && <p className="error-text">{error}</p>}
 

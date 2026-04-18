@@ -3,85 +3,135 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>案例对比 - AI Requirement Studio</title>
+    <title>案例对比 - ReqMD</title>
     <meta
       name="description"
-      content="真实案例：从一句想法到可执行需求 Markdown 的完整链路，包括澄清、生成、修订、导出与落地结果。"
+      content="ReqMD 案例对比：4 组 before/after，从一句话需求到修订后可直接喂给 Codex/Cursor/Claude Code 的文档片段。"
     />
     <style>
       body { margin: 0; font-family: "PingFang SC","Segoe UI",sans-serif; background: #0a1017; color: #edf4ff; }
-      main { max-width: 980px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.8; }
+      main { max-width: 1080px; margin: 0 auto; padding: 32px 20px 64px; line-height: 1.75; }
       h1 { margin-top: 0; font-size: 34px; }
       h2 { margin-top: 28px; font-size: 22px; }
-      h3 { margin-top: 20px; font-size: 18px; }
+      h3 { margin: 0; font-size: 17px; color: #dce8fb; }
       p, li { color: #b5c8e5; }
-      .panel { border: 1px solid #2b3d55; border-radius: 12px; padding: 14px; margin-top: 10px; background: rgba(17, 28, 42, 0.78); }
-      .badge { display: inline-block; padding: 4px 10px; border-radius: 999px; border: 1px solid #3a587c; color: #9fc4ef; font-size: 12px; margin-right: 8px; }
-      code { color: #ffd166; }
       a { color: #7fd9ff; }
+      code { color: #ffd166; white-space: pre-wrap; }
+      .top-nav { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 14px; }
+      .top-nav a { padding: 6px 10px; border: 1px solid #355071; border-radius: 999px; text-decoration: none; }
+      .case { margin-top: 16px; border: 1px solid #2b3d55; border-radius: 12px; padding: 14px; background: rgba(17, 28, 42, 0.78); }
+      .block-title { color: #9fc4ef; margin-top: 10px; margin-bottom: 6px; font-size: 14px; }
+      .panel { border: 1px solid #334860; border-radius: 8px; padding: 10px; background: rgba(10, 18, 30, 0.72); }
+      .hint { color: #90afce; font-size: 14px; }
     </style>
   </head>
   <body>
     <main>
-      <h1>案例中心：输入到交付的真实对比</h1>
-      <p>
-        下面的案例都来自真实使用路径：先输入一句想法，再补齐澄清，生成初稿，按标注修订，最后导出 Markdown 交给 AI Coding 工具继续实现。
-      </p>
+      <h1>案例页：Before / After（4 组）</h1>
+      <p>每个案例都按同一结构展示：原始一句话 -> 初版生成片段 -> 修订后片段 -> 如何喂给 AI Coding。</p>
 
-      <h2>案例一：小游戏合集应用</h2>
-      <p><span class="badge">消费应用</span><span class="badge">从 0 到 1</span></p>
-
-      <h3>1) 初始输入</h3>
-      <div class="panel">
-        <p><code>做一个轻量小游戏合集应用，适合碎片化时间游玩。</code></p>
+      <div class="top-nav">
+        <a href="/">返回首页</a>
+        <a href="/content/templates.html">模板中心</a>
+        <a href="/content/features.html">功能介绍</a>
       </div>
 
-      <h3>2) 关键澄清补充</h3>
-      <ul>
-        <li>目标用户：18-30 岁学生与年轻上班族。</li>
-        <li>场景：通勤、课间、排队等 3-10 分钟碎片时间。</li>
-        <li>MVP 范围：游戏大厅、游戏容器、广告系统、本地进度、设置页。</li>
-        <li>约束：加载时间控制在 2-3 秒，广告不打断核心流程。</li>
-      </ul>
+      <section class="case" id="case-1">
+        <h2>案例 1：SaaS 登录与权限</h2>
+        <div class="block-title">1) 原始一句话</div>
+        <div class="panel"><code>做一个 SaaS 登录系统。</code></div>
 
-      <h3>3) 生成文档结果</h3>
-      <div class="panel">
-        <p>最终文档输出了完整的可开发需求结构，包含：</p>
+        <div class="block-title">2) 初版生成片段</div>
+        <div class="panel"><code>功能：支持注册、登录、找回密码。技术建议：使用 JWT。商业化：后续可付费。</code></div>
+
+        <div class="block-title">3) 修订后片段</div>
+        <div class="panel"><code>功能详细说明（登录）
+- 输入：邮箱/密码、OAuth 回调 token。
+- 系统行为：连续 5 次失败锁定 15 分钟；成功后签发 access+refresh token。
+- 约束/规则：Refresh token 30 天有效，重置密码后强制全端下线。
+- 验收标准：P95 登录接口 &lt; 400ms；异常提示覆盖 401/403/429。
+</code></div>
+
+        <div class="block-title">4) 如何喂给 Codex/Cursor/Claude Code</div>
         <ul>
-          <li>产品定位、用户画像、关键旅程与功能清单</li>
-          <li>每个功能的交互规则、业务约束和异常处理</li>
-          <li>非功能指标（性能、兼容、稳定性）与技术架构建议</li>
-          <li>商业化策略、关键流程和迭代计划</li>
+          <li>先粘贴修订后片段，再加一句：按章节编号实现，不得跳过验收标准。</li>
+          <li>要求先输出 API/DB 变更清单，再提交代码。</li>
+          <li>把“约束/规则”作为 tests 的断言来源。</li>
         </ul>
-      </div>
+      </section>
 
-      <h3>4) 修订与交付</h3>
-      <p>
-        团队在文档中做了 7 处标注修改（删除冗余、补充验收标准、统一术语），然后导出 `.md` 给 AI Coding IDE。
-        结果是开发任务拆解更清晰，减少了多轮返工。
-      </p>
+      <section class="case" id="case-2">
+        <h2>案例 2：AI 工具导航站</h2>
+        <div class="block-title">1) 原始一句话</div>
+        <div class="panel"><code>做一个 AI 工具导航站。</code></div>
 
-      <h2>案例二：管理后台需求整理</h2>
-      <p><span class="badge">B 端系统</span><span class="badge">多人协作</span></p>
-      <div class="panel">
-        <p><strong>输入：</strong><code>做一个订单管理后台，支持权限、审批和审计。</code></p>
-        <p><strong>输出重点：</strong>角色权限矩阵、审批流状态机、操作审计字段规范、接口约束与验收口径。</p>
-      </div>
-      <p>该案例常用于产品经理与开发负责人对齐范围，先确认“哪些必须做、哪些不做”，再进入研发排期。</p>
+        <div class="block-title">2) 初版生成片段</div>
+        <div class="panel"><code>支持工具列表和详情页，后续接入 SEO。</code></div>
 
-      <h2>你可以复制的使用方式</h2>
-      <ol>
-        <li>先写一句话目标，不要追求一次写全。</li>
-        <li>重点回答澄清问题中的范围、约束和验收。</li>
-        <li>生成后先做标注修订，再导出给 AI Coding。</li>
-        <li>导出后把文档作为单一事实源，减少口头补充。</li>
-      </ol>
+        <div class="block-title">3) 修订后片段</div>
+        <div class="panel"><code>非功能需求
+- SEO：模板页与详情页均为可抓取静态 HTML；每页包含 canonical 与内链。
+- 数据质量：重复工具标题 + URL 相似度&gt;0.9 时进入人工审核。
+- 验收标准：模板页点击“用此模板生成”到首页预填成功率&gt;99%。
+</code></div>
 
-      <p>
-        需要更多行业案例可发送邮件到
-        <a href="mailto:support@reqmd.com">support@reqmd.com</a>。
-      </p>
-      <p><a href="/">返回首页</a></p>
+        <div class="block-title">4) 如何喂给 Codex/Cursor/Claude Code</div>
+        <ul>
+          <li>要求按“可抓取静态页”优先实现，不先做 CSR-only。</li>
+          <li>把“成功率&gt;99%”转成端到端测试目标。</li>
+          <li>让 AI 输出 sitemap/robots 同步变更。</li>
+        </ul>
+      </section>
+
+      <section class="case" id="case-3">
+        <h2>案例 3：后台审批流系统</h2>
+        <div class="block-title">1) 原始一句话</div>
+        <div class="panel"><code>做一个带审批的后台系统。</code></div>
+
+        <div class="block-title">2) 初版生成片段</div>
+        <div class="panel"><code>支持审批和权限管理。</code></div>
+
+        <div class="block-title">3) 修订后片段</div>
+        <div class="panel"><code>核心用户旅程（审批）
+- 阶段 A 提交：业务员提交申请，系统校验必填字段并生成待审单据。
+- 阶段 B 审批：主管可通过/驳回，驳回需填写原因。
+- 阶段 C 归档：通过后写入审计日志（操作者、时间、差异字段）。
+验收标准：驳回流程必须保留原数据快照，且支持恢复编辑。
+</code></div>
+
+        <div class="block-title">4) 如何喂给 Codex/Cursor/Claude Code</div>
+        <ul>
+          <li>直接让 AI 按阶段 A/B/C 输出状态机与迁移脚本。</li>
+          <li>要求“驳回原因必填”写入后端校验和前端交互双重约束。</li>
+          <li>生成审计日志字段的 schema + 索引方案。</li>
+        </ul>
+      </section>
+
+      <section class="case" id="case-4">
+        <h2>案例 4：AI Agent 工作流</h2>
+        <div class="block-title">1) 原始一句话</div>
+        <div class="panel"><code>做一个 AI Agent 自动化平台。</code></div>
+
+        <div class="block-title">2) 初版生成片段</div>
+        <div class="panel"><code>支持工作流配置和任务执行。</code></div>
+
+        <div class="block-title">3) 修订后片段</div>
+        <div class="panel"><code>技术架构建议
+- 执行模型：任务进入 queued/running/completed/failed 四态，失败支持最多 2 次指数退避重试。
+- 风险控制：涉及外部写操作的节点需人工确认（human-in-the-loop）。
+- 可观测性：每个节点记录 requestId、工具入参摘要、耗时与错误码。
+验收标准：高风险节点未经确认不得落库。
+</code></div>
+
+        <div class="block-title">4) 如何喂给 Codex/Cursor/Claude Code</div>
+        <ul>
+          <li>先让 AI 生成状态机与重试策略，再实现节点执行器。</li>
+          <li>明确“高风险节点”必须加 gating middleware。</li>
+          <li>要求输出最小可观测字段并附带日志示例。</li>
+        </ul>
+      </section>
+
+      <p class="hint" style="margin-top: 24px;">想直接套用可复制输入，请去 <a href="/content/templates.html">模板中心</a>；需要能力说明请看 <a href="/content/features.html">功能介绍</a>。</p>
     </main>
   </body>
 </html>

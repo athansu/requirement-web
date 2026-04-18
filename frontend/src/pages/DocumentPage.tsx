@@ -3,13 +3,18 @@ import {
   ApiError,
   createReviseRepairJob,
   createSubscriptionCheckout,
+  deleteDocumentById,
   exportDocument,
+  listDocuments,
+  saveDocument,
+  getUsage,
   trackEvent,
   reviseDocument,
   getReviseConsistencyJobStatus,
   retryReviseConsistencyJob,
   applyReviseConsistencyJob,
   getSubscription,
+  type SavedDocumentSummary,
 } from '../services/api';
 import type { Annotation, AnnotationType, AnnotationAnchorPolicy } from '../types';
 import { DocumentView } from '../components/DocumentView';
@@ -19,10 +24,16 @@ import '../App.css';
 interface DocumentPageProps {
   initialDocument: string;
   userRequirement: string;
+  currentDocumentId: string | null;
+  scenario?: string;
+  templateSlug?: string;
   onBack: () => void;
   onDocumentChange: (doc: string) => void;
+  onDocumentSaved?: (payload: { id: string; userRequirement?: string; scenario?: string; templateSlug?: string }) => void;
+  onRestoreDocument?: (documentId: string) => Promise<void> | void;
   onRequireAuthForExport: (payload: { document: string; title: string }) => void;
   exportAfterAuthSignal: number;
+  onUsageRefresh?: () => Promise<void> | void;
 }
 
 const REVISE_JOB_STORAGE_KEY = 'requirement-website.revise-consistency-job.v1';
@@ -38,10 +49,16 @@ const REPAIR_STATUS_LABEL: Record<'queued' | 'running' | 'completed' | 'complete
 export function DocumentPage({
   initialDocument,
   userRequirement,
+  currentDocumentId,
+  scenario,
+  templateSlug,
   onBack,
   onDocumentChange,
+  onDocumentSaved,
+  onRestoreDocument,
   onRequireAuthForExport,
   exportAfterAuthSignal,
+  onUsageRefresh,
 }: DocumentPageProps) {
   const pollingJobRef = useRef('');
   const lastProcessedExportSignalRef = useRef(0);
@@ -82,6 +99,18 @@ export function DocumentPage({
   const [showExportPaywall, setShowExportPaywall] = useState(false);
   const [exportPaywallMessage, setExportPaywallMessage] = useState('免费额度已用尽，请开通订阅后导出。');
   const [displayConsistencyRemainingMs, setDisplayConsistencyRemainingMs] = useState(0);
+  const [localDocumentId, setLocalDocumentId] = useState<string | null>(currentDocumentId);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyList, setHistoryList] = useState<SavedDocumentSummary[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [historyNotice, setHistoryNotice] = useState('');
+  const [exportQuota, setExportQuota] = useState<{
+    total: number;
+    used: number;
+    remaining: number;
+    canDownload: boolean;
+    paymentGatingEnabled: boolean;
+  } | null>(null);
 
   const persistConsistencyJob = useCallback((jobId: string) => {
     if (typeof window === 'undefined') return;
@@ -92,6 +121,88 @@ export function DocumentPage({
     if (typeof window === 'undefined') return;
     window.localStorage.removeItem(REVISE_JOB_STORAGE_KEY);
   }, []);
+
+  const refreshExportQuota = useCallback(async () => {
+    try {
+      const usage = await getUsage();
+      setExportQuota({
+        total: Math.max(usage.freeExportQuotaTotal ?? 3, 0),
+        used: Math.max(usage.freeExportUsed ?? 0, 0),
+        remaining: Math.max(usage.freeExportRemaining ?? 0, 0),
+        canDownload: Boolean(usage.entitlements?.canDownload),
+        paymentGatingEnabled: Boolean(usage.paymentGatingEnabled),
+      });
+    } catch {
+      setExportQuota(null);
+    }
+  }, []);
+
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const res = await listDocuments();
+      setHistoryList(res.documents || []);
+      setHistoryNotice('');
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 401) {
+        setHistoryList([]);
+        setHistoryNotice('');
+        return;
+      }
+      setHistoryNotice(e instanceof Error ? e.message : '加载历史失败');
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  const persistCurrentDocument = useCallback(async (
+    options?: { saveAsCopy?: boolean; silent?: boolean; contentOverride?: string; titleOverride?: string }
+  ) => {
+    const content = (options?.contentOverride ?? document).trim();
+    if (!content) return null;
+    try {
+      if (!options?.silent) setSaving(true);
+      const res = await saveDocument({
+        ...(localDocumentId ? { id: localDocumentId } : {}),
+        ...(options?.saveAsCopy ? { saveAsCopy: true } : {}),
+        title: options?.titleOverride || `需求Markdown-${userRequirement.slice(0, 20) || '文档'}`,
+        userRequirement,
+        scenario: scenario || '通用产品',
+        document: content,
+        templateSlug: templateSlug || '',
+      });
+      if (res.success && res.document?.id) {
+        setLocalDocumentId(res.document.id);
+        onDocumentSaved?.({
+          id: res.document.id,
+          userRequirement: res.document.userRequirement,
+          scenario: res.document.scenario,
+          templateSlug: res.document.templateSlug || '',
+        });
+        if (!options?.silent) setHistoryNotice(options?.saveAsCopy ? '已另存为副本' : '已保存');
+        await loadHistory();
+        return res.document;
+      }
+      if (!options?.silent) setHistoryNotice(res.message || '保存失败');
+    } catch (e) {
+      if (!options?.silent) setHistoryNotice(e instanceof Error ? e.message : '保存失败');
+    } finally {
+      if (!options?.silent) setSaving(false);
+    }
+    return null;
+  }, [document, loadHistory, localDocumentId, onDocumentSaved, scenario, templateSlug, userRequirement]);
+
+  const handleDeleteHistory = useCallback(async (id: string) => {
+    try {
+      await deleteDocumentById(id);
+      if (id === localDocumentId) {
+        setLocalDocumentId(null);
+      }
+      await loadHistory();
+    } catch (e) {
+      setHistoryNotice(e instanceof Error ? e.message : '删除失败');
+    }
+  }, [loadHistory, localDocumentId]);
 
   const addAnnotation = useCallback(
     (type: AnnotationType, quote: string, content?: string, anchorPolicy?: AnnotationAnchorPolicy) => {
@@ -148,6 +259,7 @@ export function DocumentPage({
         clearConsistencyJob();
         setConsistencyJob(null);
         setNotice('局部修订完成：文档已更新。可选点击「全篇修复」进行联动优化。');
+        persistCurrentDocument({ silent: true, contentOverride: res.document }).catch(() => undefined);
       } else {
         setNotice('');
         setError(res.message || '修订失败');
@@ -250,6 +362,22 @@ export function DocumentPage({
     }
   }, [clearConsistencyJob, pollConsistencyJob]);
 
+  useEffect(() => {
+    refreshExportQuota().catch(() => undefined);
+  }, [refreshExportQuota]);
+
+  useEffect(() => {
+    setDocument(initialDocument);
+  }, [initialDocument]);
+
+  useEffect(() => {
+    setLocalDocumentId(currentDocumentId);
+  }, [currentDocumentId]);
+
+  useEffect(() => {
+    loadHistory().catch(() => undefined);
+  }, [loadHistory]);
+
   const handleRetryConsistency = async () => {
     if (!consistencyJob?.id) return;
     setConsistencyNotice('');
@@ -322,6 +450,7 @@ export function DocumentPage({
         setConsistencyNotice('已应用联动版本。');
         clearConsistencyJob();
         setConsistencyJob(null);
+        persistCurrentDocument({ silent: true, contentOverride: res.document }).catch(() => undefined);
       } else {
         setConsistencyNotice(res.message || '应用联动版本失败');
       }
@@ -337,6 +466,7 @@ export function DocumentPage({
     setExporting(true);
     try {
       const title = `需求Markdown-${userRequirement.slice(0, 20)}`;
+      await persistCurrentDocument({ silent: true, titleOverride: title });
       trackEvent('click_export', { source: 'document_page' }).catch(() => undefined);
       const res = await exportDocument(document, title);
       if (!res.success || !res.document) {
@@ -354,6 +484,20 @@ export function DocumentPage({
       window.document.body.removeChild(a);
       setTimeout(() => URL.revokeObjectURL(url), 200);
       setConsistencyNotice('导出成功。');
+      if (typeof res.freeExportRemaining === 'number') {
+        setExportQuota((prev) => {
+          if (!prev || prev.canDownload) return prev;
+          const remaining = Math.max(res.freeExportRemaining ?? prev.remaining, 0);
+          return {
+            ...prev,
+            used: Math.max(prev.total - remaining, 0),
+            remaining,
+          };
+        });
+      } else {
+        refreshExportQuota().catch(() => undefined);
+      }
+      onUsageRefresh?.();
     } catch (error) {
       if (error instanceof ApiError && error.status === 401) {
         setConsistencyNotice('下载需要登录，登录后会自动继续下载。');
@@ -368,7 +512,9 @@ export function DocumentPage({
         || (error instanceof Error && (error.message.includes('subscription_required') || error.message.includes('月订阅')))
       ) {
         setShowExportPaywall(true);
-        setExportPaywallMessage('免费额度已用尽，请开通订阅后导出。');
+        setExportPaywallMessage(error instanceof Error ? error.message : '免费导出次数已用完，请开通订阅后导出');
+        refreshExportQuota().catch(() => undefined);
+        onUsageRefresh?.();
         setConsistencyNotice('');
         return;
       }
@@ -376,7 +522,7 @@ export function DocumentPage({
     } finally {
       setExporting(false);
     }
-  }, [document, exporting, onRequireAuthForExport, userRequirement]);
+  }, [document, exporting, onRequireAuthForExport, onUsageRefresh, persistCurrentDocument, refreshExportQuota, userRequirement]);
 
   const stopCheckoutPolling = useCallback(() => {
     if (checkoutPollTimerRef.current !== null) {
@@ -454,7 +600,11 @@ export function DocumentPage({
         <span style={{ color: '#8b949e', fontSize: '0.9rem' }}>需求：{userRequirement.slice(0, 40)}{userRequirement.length > 40 ? '…' : ''}</span>
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
           <span style={{ color: '#8fa7c8', fontSize: 12, alignSelf: 'center', marginRight: 4 }}>
-            下载需登录，免费档需订阅
+            {exportQuota
+              ? (exportQuota.canDownload
+                ? (exportQuota.paymentGatingEnabled ? '已订阅，可无限导出' : '当前可无限导出（支付未开启）')
+                : `免费导出剩余 ${exportQuota.remaining}/${exportQuota.total}，用完需订阅`)
+              : '下载需登录'}
           </span>
           <button
             className="btn-primary"
@@ -462,6 +612,24 @@ export function DocumentPage({
             disabled={annotations.length === 0 || revising}
           >
             {revising ? '修订中…' : `按标注修订${annotations.length > 0 ? ` (${annotations.length})` : ''}`}
+          </button>
+          <button
+            className="btn-secondary"
+            onClick={() => {
+              persistCurrentDocument().catch(() => undefined);
+            }}
+            disabled={saving}
+          >
+            {saving ? '保存中…' : '保存'}
+          </button>
+          <button
+            className="btn-secondary"
+            onClick={() => {
+              persistCurrentDocument({ saveAsCopy: true }).catch(() => undefined);
+            }}
+            disabled={saving}
+          >
+            另存副本
           </button>
           <button className="btn-secondary" onClick={handleExport}>
             {exporting ? '导出中…' : '导出 .md'}
@@ -485,8 +653,93 @@ export function DocumentPage({
           {notice}
         </div>
       )}
+      {historyNotice && (
+        <div
+          style={{
+            padding: '8px 24px',
+            background: '#58a6ff22',
+            color: '#79c0ff',
+            borderBottom: '1px solid #30363d',
+          }}
+        >
+          {historyNotice}
+        </div>
+      )}
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <main style={{ flex: 1, overflow: 'auto', padding: 24 }}>
+          <details
+            style={{
+              marginBottom: 14,
+              padding: '12px 14px',
+              border: '1px solid #30363d',
+              borderRadius: 10,
+              background: '#0f1722',
+            }}
+          >
+            <summary style={{ cursor: 'pointer', color: '#d7e4f7' }}>
+              历史文档（{historyList.length}）
+            </summary>
+            <div style={{ marginTop: 10, display: 'grid', gap: 8 }}>
+              <button
+                type="button"
+                className="btn-secondary"
+                onClick={() => {
+                  loadHistory().catch(() => undefined);
+                }}
+                disabled={historyLoading}
+                style={{ width: 'fit-content' }}
+              >
+                {historyLoading ? '刷新中…' : '刷新历史'}
+              </button>
+              {historyList.length === 0 ? (
+                <p style={{ color: '#95a9c8', margin: 0 }}>暂无已保存文档（登录后可保存并恢复）。</p>
+              ) : (
+                historyList.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      border: '1px solid rgba(146,170,203,0.25)',
+                      borderRadius: 8,
+                      padding: 10,
+                      background: 'rgba(10,18,30,0.72)',
+                      display: 'flex',
+                      flexWrap: 'wrap',
+                      gap: 8,
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                    }}
+                  >
+                    <div style={{ minWidth: 260, flex: 1 }}>
+                      <div style={{ color: '#dce8fb', fontSize: 14 }}>{item.title || '需求文档'}</div>
+                      <div style={{ color: '#95a9c8', fontSize: 12, marginTop: 4 }}>
+                        {item.userRequirement || '未填写需求描述'} · {item.scenario || '通用产品'} · {item.lastUsedAt || item.updatedAt}
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => {
+                          onRestoreDocument?.(item.id);
+                        }}
+                      >
+                        恢复
+                      </button>
+                      <button
+                        type="button"
+                        className="btn-secondary"
+                        onClick={() => {
+                          handleDeleteHistory(item.id).catch(() => undefined);
+                        }}
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </div>
+                ))
+              )}
+            </div>
+          </details>
           {hasContent && (
             <section
               style={{

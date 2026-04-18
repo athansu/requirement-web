@@ -66,7 +66,8 @@ npm start
 
 - `ACCESS_TOKEN_TTL_MS` / `REFRESH_TOKEN_TTL_MS`
 - `ANON_QUOTA_ENFORCED`（`dev/test` 建议 `0`，`prod` 建议 `1`）
-- `PADDLE_ENV`（`sandbox` 或 `live`）
+- `PAYMENT_GATING_ENABLED`（`0` 关闭支付门禁，`1` 开启）
+- `PADDLE_ENV`（`sandbox`、`live` 或 `production`）
 - `PADDLE_API_KEY`
 - `PADDLE_WEBHOOK_SECRET`
 - `PADDLE_PRICE_ID_CNY`
@@ -95,7 +96,7 @@ npm start
 - 漏斗事件：`POST /api/events`、`GET /api/events/funnel`
 - 健康检查：`GET /api/health`、`GET /api/ready`
 
-说明：现有 `generate/revise` 接口已接入鉴权与月配额校验，并返回 `plan`、`quotaRemaining`、`entitlements` 字段；下载接口 `POST /api/document/export` 需月订阅。
+说明：现有 `generate/revise` 接口已接入鉴权与月配额校验，并返回 `plan`、`quotaRemaining`、`entitlements` 字段；下载接口 `POST /api/document/export` 是否走订阅门禁由 `PAYMENT_GATING_ENABLED` 控制。
 
 ## 上线前快速检查（建议每次发布都跑）
 

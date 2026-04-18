@@ -223,6 +223,39 @@ async function get<T>(path: string, timeoutMs = JOB_STATUS_TIMEOUT_MS): Promise<
   return data as T;
 }
 
+async function remove<T>(path: string, timeoutMs = API_TIMEOUT_MS): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => controller.abort(), timeoutMs);
+  const fingerprint = getOrCreateDeviceFingerprint();
+  let res: Response;
+  try {
+    res = await fetch(`${API_BASE}${path}`, {
+      method: 'DELETE',
+      signal: controller.signal,
+      headers: {
+        ...(fingerprint ? { 'x-device-fingerprint': fingerprint } : {}),
+        ...(authState?.accessToken ? { Authorization: `Bearer ${authState.accessToken}` } : {}),
+      },
+    });
+  } catch (error) {
+    throw normalizeFetchError(path, timeoutMs, error);
+  } finally {
+    window.clearTimeout(timeoutId);
+  }
+  const text = await res.text();
+  let data: { message?: string; code?: string } = {};
+  try {
+    data = JSON.parse(text) as { message?: string; code?: string };
+  } catch {
+    if (!res.ok) throw new ApiError(`请求失败 (${res.status})`, res.status);
+  }
+  if (res.status === 401) {
+    setAuthTokens(null);
+  }
+  if (!res.ok) throw new ApiError(data.message || '请求失败', res.status, data.code);
+  return data as T;
+}
+
 export interface ClarifyRes {
   success: boolean;
   questions?: string[];
@@ -395,6 +428,10 @@ export interface AuthRes {
     tokenRemaining: number;
     period: string;
   };
+  freeExportQuotaTotal?: number;
+  freeExportUsed?: number;
+  freeExportRemaining?: number;
+  paymentGatingEnabled?: boolean;
   message?: string;
   resetCode?: string;
 }
@@ -433,6 +470,10 @@ export interface UsageRes {
     tokenRemaining: number;
     period: string;
   };
+  freeExportQuotaTotal: number;
+  freeExportUsed: number;
+  freeExportRemaining: number;
+  paymentGatingEnabled: boolean;
   plan: string;
   limits: {
     monthlyGenerate: number;
@@ -552,9 +593,13 @@ export interface SubscriptionCheckoutRes {
 
 export type FunnelEventName =
   | 'visit'
+  | 'template_view'
+  | 'template_use'
   | 'start_generate'
   | 'enter_editor'
   | 'click_export'
+  | 'free_export_used'
+  | 'free_export_exhausted'
   | 'login_success'
   | 'checkout_start'
   | 'checkout_success'
@@ -744,9 +789,74 @@ export interface ExportDocumentRes {
   title?: string;
   document?: string;
   contentType?: string;
+  freeExportRemaining?: number;
   message?: string;
 }
 
 export function exportDocument(document: string, title?: string): Promise<ExportDocumentRes> {
   return post<ExportDocumentRes>('/document/export', { document, ...(title ? { title } : {}) }, 12000);
+}
+
+export interface SavedDocumentSummary {
+  id: string;
+  title: string;
+  userRequirement: string;
+  scenario: string;
+  templateSlug?: string;
+  sourceDocumentId?: string;
+  createdAt: string;
+  updatedAt: string;
+  lastUsedAt: string;
+  documentLength: number;
+  preview: string;
+}
+
+export interface SavedDocumentDetail extends SavedDocumentSummary {
+  document: string;
+}
+
+export interface SaveDocumentRes {
+  success: boolean;
+  code?: string;
+  message?: string;
+  document?: SavedDocumentDetail;
+}
+
+export interface ListDocumentsRes {
+  success: boolean;
+  code?: string;
+  message?: string;
+  documents?: SavedDocumentSummary[];
+}
+
+export interface GetDocumentRes {
+  success: boolean;
+  code?: string;
+  message?: string;
+  document?: SavedDocumentDetail;
+}
+
+export function saveDocument(payload: {
+  id?: string;
+  saveAsCopy?: boolean;
+  title?: string;
+  userRequirement: string;
+  scenario?: string;
+  document: string;
+  templateSlug?: string;
+  sourceDocumentId?: string;
+}): Promise<SaveDocumentRes> {
+  return post<SaveDocumentRes>('/documents/save', payload, 12000);
+}
+
+export function listDocuments(): Promise<ListDocumentsRes> {
+  return get<ListDocumentsRes>('/documents', 12000);
+}
+
+export function getDocumentById(id: string): Promise<GetDocumentRes> {
+  return get<GetDocumentRes>(`/documents/${encodeURIComponent(id)}`, 12000);
+}
+
+export function deleteDocumentById(id: string): Promise<{ success: boolean; code?: string; message?: string }> {
+  return remove<{ success: boolean; code?: string; message?: string }>(`/documents/${encodeURIComponent(id)}`, 12000);
 }

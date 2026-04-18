@@ -1,9 +1,12 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { Home } from './pages/Home';
 import { DocumentPage } from './pages/DocumentPage';
 import {
   forgotPassword,
+  getDocumentById,
   getAuthTokens,
+  listDocuments,
   getMe,
   getUsage,
   login,
@@ -11,6 +14,7 @@ import {
   refreshAuth,
   register,
   resetPassword,
+  saveDocument,
   trackEvent,
   type AuthUser,
 } from './services/api';
@@ -25,6 +29,9 @@ function readAppState() {
 export default function App() {
   const [document, setDocument] = useState(() => readAppState().document);
   const [userRequirement, setUserRequirement] = useState(() => readAppState().userRequirement);
+  const [documentId, setDocumentId] = useState<string | null>(null);
+  const [currentScenario, setCurrentScenario] = useState('通用产品');
+  const [currentTemplateSlug, setCurrentTemplateSlug] = useState('');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authLoading, setAuthLoading] = useState(true);
   const [showAuthDialog, setShowAuthDialog] = useState(false);
@@ -41,9 +48,82 @@ export default function App() {
     document: string;
     title: string;
   } | null>(null);
+  const [restoringLatest, setRestoringLatest] = useState(false);
   const [exportAfterAuthSignal, setExportAfterAuthSignal] = useState(0);
   const [authNotice, setAuthNotice] = useState('');
   const isDocumentView = Boolean(document && userRequirement);
+
+  const refreshUsageSummary = useCallback(async () => {
+    if (!authUser) {
+      setUsageSummary('');
+      return;
+    }
+    try {
+      const usage = await getUsage();
+      const exportSummary = usage.entitlements?.canDownload
+        ? (usage.paymentGatingEnabled ? '导出 不限次' : '导出 不限次（支付未开启）')
+        : `导出 ${Math.max(usage.freeExportRemaining ?? 0, 0)}/3`;
+      setUsageSummary(`本月剩余：生成 ${usage.quotaRemaining.generateRemaining} 次，修订 ${usage.quotaRemaining.reviseRemaining} 次，${exportSummary}`);
+    } catch {
+      setUsageSummary('');
+    }
+  }, [authUser]);
+
+  const persistDocument = useCallback(async (
+    payload: {
+      id?: string | null;
+      saveAsCopy?: boolean;
+      title?: string;
+      userRequirement: string;
+      scenario?: string;
+      document: string;
+      templateSlug?: string;
+      sourceDocumentId?: string;
+    }
+  ) => {
+    if (!authUser) return null;
+    const res = await saveDocument({
+      ...(payload.id ? { id: payload.id } : {}),
+      ...(payload.saveAsCopy ? { saveAsCopy: true } : {}),
+      ...(payload.title ? { title: payload.title } : {}),
+      ...(payload.scenario ? { scenario: payload.scenario } : {}),
+      ...(payload.templateSlug ? { templateSlug: payload.templateSlug } : {}),
+      ...(payload.sourceDocumentId ? { sourceDocumentId: payload.sourceDocumentId } : {}),
+      userRequirement: payload.userRequirement,
+      document: payload.document,
+    });
+    return res.document ?? null;
+  }, [authUser]);
+
+  const restoreDocumentById = useCallback(async (id: string) => {
+    const res = await getDocumentById(id);
+    if (!res.success || !res.document) {
+      throw new Error(res.message || '文档不存在或已删除');
+    }
+    setDocument(res.document.document || '');
+    setUserRequirement(res.document.userRequirement || res.document.title || '');
+    setDocumentId(res.document.id);
+    setCurrentScenario(res.document.scenario || '通用产品');
+    setCurrentTemplateSlug(res.document.templateSlug || '');
+    setAuthNotice('已恢复历史文档');
+  }, []);
+
+  const restoreLatestDocument = useCallback(async () => {
+    if (!authUser) return;
+    if (document || userRequirement || restoringLatest) return;
+    setRestoringLatest(true);
+    try {
+      const listRes = await listDocuments();
+      const latest = (listRes.documents || [])[0];
+      if (!latest?.id) return;
+      await restoreDocumentById(latest.id);
+      setAuthNotice('已恢复最近会话');
+    } catch {
+      // ignore restore errors
+    } finally {
+      setRestoringLatest(false);
+    }
+  }, [authUser, document, restoringLatest, restoreDocumentById, userRequirement]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -108,24 +188,12 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!authUser) {
-      setUsageSummary('');
-      return;
-    }
-    let cancelled = false;
-    getUsage()
-      .then((usage) => {
-        if (cancelled) return;
-        setUsageSummary(`本月剩余：生成 ${usage.quotaRemaining.generateRemaining} 次，修订 ${usage.quotaRemaining.reviseRemaining} 次`);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setUsageSummary('');
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [authUser]);
+    refreshUsageSummary().catch(() => undefined);
+  }, [refreshUsageSummary]);
+
+  useEffect(() => {
+    restoreLatestDocument().catch(() => undefined);
+  }, [restoreLatestDocument]);
 
   useEffect(() => {
     setAuthError('');
@@ -135,10 +203,26 @@ export default function App() {
     }
   }, [authMode]);
 
-  const handleGenerate = (req: string, doc: string) => {
+  const handleGenerate = useCallback((req: string, doc: string, options?: { scenario?: string; templateSlug?: string }) => {
     setUserRequirement(req);
     setDocument(doc);
-  };
+    setCurrentScenario(options?.scenario || '通用产品');
+    setCurrentTemplateSlug(options?.templateSlug || '');
+    setDocumentId(null);
+    if (!authUser) return;
+    persistDocument({
+      userRequirement: req,
+      scenario: options?.scenario || '通用产品',
+      document: doc,
+      templateSlug: options?.templateSlug || '',
+      title: `需求Markdown-${req.slice(0, 20) || '文档'}`,
+    })
+      .then((saved) => {
+        if (!saved?.id) return;
+        setDocumentId(saved.id);
+      })
+      .catch(() => undefined);
+  }, [authUser, persistDocument]);
 
   const openAuthDialog = (mode: 'login' | 'register' | 'forgot' = 'login') => {
     setAuthMode(mode);
@@ -179,6 +263,9 @@ export default function App() {
         setPendingDocumentContext(null);
       } else {
         setAuthNotice('已登录');
+        if (!document && !userRequirement) {
+          restoreLatestDocument().catch(() => undefined);
+        }
       }
     } catch (error) {
       setAuthError(error instanceof Error ? error.message : '登录失败');
@@ -240,6 +327,7 @@ export default function App() {
     await logout();
     setAuthUser(null);
     setUsageSummary('');
+    setDocumentId(null);
   };
 
   const handleRequireAuthForExport = (payload: { document: string; title: string }) => {
@@ -290,16 +378,30 @@ export default function App() {
         <DocumentPage
           initialDocument={document}
           userRequirement={userRequirement}
+          currentDocumentId={documentId}
+          scenario={currentScenario}
+          templateSlug={currentTemplateSlug}
           onBack={() => {
             if (typeof window !== 'undefined') {
               window.localStorage.removeItem(HOME_STORAGE_KEY);
             }
             setDocument('');
             setUserRequirement('');
+            setDocumentId(null);
+            setCurrentTemplateSlug('');
+            setCurrentScenario('通用产品');
           }}
           onDocumentChange={setDocument}
+          onDocumentSaved={(saved) => {
+            setDocumentId(saved.id);
+            if (saved.userRequirement) setUserRequirement(saved.userRequirement);
+            if (saved.scenario) setCurrentScenario(saved.scenario);
+            if (saved.templateSlug !== undefined) setCurrentTemplateSlug(saved.templateSlug || '');
+          }}
+          onRestoreDocument={restoreDocumentById}
           onRequireAuthForExport={handleRequireAuthForExport}
           exportAfterAuthSignal={exportAfterAuthSignal}
+          onUsageRefresh={refreshUsageSummary}
         />
       ) : (
         <Home onGenerate={handleGenerate} />
@@ -437,6 +539,8 @@ export default function App() {
           </div>
         </div>
       )}
+
+      <Analytics />
     </div>
   );
 }

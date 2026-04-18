@@ -161,6 +161,7 @@ const PADDLE_PRICE_ID_USD = sanitizeEnvSecret(process.env.PADDLE_PRICE_ID_USD, '
 const PADDLE_SUCCESS_URL = (process.env.PADDLE_SUCCESS_URL || '').trim();
 const PADDLE_CANCEL_URL = (process.env.PADDLE_CANCEL_URL || '').trim();
 const PADDLE_CHECKOUT_LOCALE = (process.env.PADDLE_CHECKOUT_LOCALE || 'zh').trim();
+const PAYMENT_GATING_ENABLED = process.env.PAYMENT_GATING_ENABLED === '1';
 const RESEND_API_KEY = sanitizeEnvSecret(process.env.RESEND_API_KEY, '');
 const MAIL_FROM = sanitizeText(process.env.MAIL_FROM || '', 200);
 const RESET_PASSWORD_URL_BASE = sanitizeText(process.env.RESET_PASSWORD_URL_BASE || '', 600).replace(/\/+$/, '');
@@ -191,13 +192,17 @@ const PLANS = {
     name: 'Pro',
     cycle: ['monthly'],
     priceCny: { monthly: 9.9, yearly: 9.9 },
-    priceUsd: { monthly: 3.99, yearly: 3.99 },
+    priceUsd: { monthly: 3.9, yearly: 3.9 },
     limits: { monthlyGenerate: 999999, monthlyRevise: 999999, monthlyTokens: 50000000, maxConcurrentJobs: 5, perMinRequests: 240 },
     entitlements: { canDownload: true },
   },
 };
+const FREE_EXPORT_QUOTA_TOTAL = Math.max(Number(process.env.FREE_EXPORT_QUOTA_TOTAL) || 3, 0);
+const MAX_DOCUMENTS_PER_USER = Math.max(Number(process.env.MAX_DOCUMENTS_PER_USER) || 200, 20);
 const FUNNEL_EVENTS = new Set([
   'visit',
+  'template_view',
+  'template_use',
   'start_generate',
   'enter_editor',
   'click_export',
@@ -205,6 +210,8 @@ const FUNNEL_EVENTS = new Set([
   'checkout_start',
   'checkout_success',
   'export_success',
+  'free_export_used',
+  'free_export_exhausted',
 ]);
 const MAX_ANALYTICS_EVENTS = Math.max(Number(process.env.MAX_ANALYTICS_EVENTS) || 5000, 500);
 const frontendDistDir = path.resolve(__dirname, '../frontend/dist');
@@ -314,6 +321,8 @@ const usersByEmail = new Map();
 const refreshTokens = new Map();
 const subscriptionsByUser = new Map();
 const usageByUserMonth = new Map();
+const freeExportUsageByUser = new Map();
+const documentsByUser = new Map();
 const paymentEventsByUser = new Map();
 const processedWebhookEvents = new Map();
 const analyticsEvents = [];
@@ -585,6 +594,138 @@ function getQuotaRemaining(userId, key = monthKey()) {
   };
 }
 
+function getFreeExportUsage(userId) {
+  const used = Math.max(Number(freeExportUsageByUser.get(userId) || 0), 0);
+  const total = FREE_EXPORT_QUOTA_TOTAL;
+  return {
+    total,
+    used,
+    remaining: Math.max(total - used, 0),
+  };
+}
+
+function consumeFreeExportUsage(userId) {
+  const usage = getFreeExportUsage(userId);
+  const nextUsed = Math.min(usage.used + 1, usage.total);
+  freeExportUsageByUser.set(userId, nextUsed);
+  schedulePersistUsers();
+  return {
+    total: usage.total,
+    used: nextUsed,
+    remaining: Math.max(usage.total - nextUsed, 0),
+  };
+}
+
+function getUserDocuments(userId) {
+  const docs = documentsByUser.get(userId);
+  if (!Array.isArray(docs)) return [];
+  return docs;
+}
+
+function sortDocumentsByRecent(documents = []) {
+  return [...documents].sort((a, b) => {
+    const aTs = Date.parse(a?.lastUsedAt || a?.updatedAt || a?.createdAt || 0);
+    const bTs = Date.parse(b?.lastUsedAt || b?.updatedAt || b?.createdAt || 0);
+    return bTs - aTs;
+  });
+}
+
+function buildDocumentSummary(document) {
+  const content = String(document?.document || '');
+  return {
+    id: sanitizeText(document?.id, 120),
+    title: sanitizeText(document?.title, 120),
+    userRequirement: sanitizeText(document?.userRequirement, MAX_REQUIREMENT_LENGTH),
+    scenario: sanitizeText(document?.scenario, MAX_SCENARIO_LENGTH),
+    templateSlug: sanitizeText(document?.templateSlug, 120),
+    sourceDocumentId: sanitizeText(document?.sourceDocumentId, 120),
+    createdAt: sanitizeText(document?.createdAt, 80),
+    updatedAt: sanitizeText(document?.updatedAt, 80),
+    lastUsedAt: sanitizeText(document?.lastUsedAt, 80),
+    documentLength: content.length,
+    preview: sanitizeText(content.slice(0, 220), 220),
+  };
+}
+
+function upsertUserDocument(userId, payload = {}) {
+  const now = nowIso();
+  const documents = getUserDocuments(userId);
+  const requestedId = sanitizeText(payload.id, 120);
+  const saveAsCopy = payload.saveAsCopy === true;
+  const title = sanitizeText(payload.title, 120) || '需求文档';
+  const userRequirement = sanitizeText(payload.userRequirement, MAX_REQUIREMENT_LENGTH);
+  const scenario = sanitizeText(payload.scenario, MAX_SCENARIO_LENGTH) || '通用产品';
+  const templateSlug = sanitizeText(payload.templateSlug, 120);
+  const sourceDocumentId = sanitizeText(payload.sourceDocumentId, 120);
+  const content = sanitizeText(payload.document, 120000);
+  if (!content) {
+    const err = new Error('缺少 document');
+    err.code = 'invalid_params';
+    throw err;
+  }
+
+  let nextDocument = null;
+  if (requestedId && !saveAsCopy) {
+    const existingIndex = documents.findIndex((item) => item?.id === requestedId);
+    if (existingIndex >= 0) {
+      const existing = documents[existingIndex];
+      nextDocument = {
+        ...existing,
+        title,
+        userRequirement: userRequirement || existing.userRequirement || '',
+        scenario: scenario || existing.scenario || '通用产品',
+        document: content,
+        templateSlug: templateSlug || existing.templateSlug || '',
+        sourceDocumentId: sourceDocumentId || existing.sourceDocumentId || '',
+        updatedAt: now,
+        lastUsedAt: now,
+      };
+      documents.splice(existingIndex, 1, nextDocument);
+    }
+  }
+
+  if (!nextDocument) {
+    const nextId = randomUUID();
+    nextDocument = {
+      id: nextId,
+      userId,
+      title,
+      userRequirement: userRequirement || title,
+      scenario,
+      document: content,
+      templateSlug,
+      sourceDocumentId: sourceDocumentId || (saveAsCopy ? requestedId : ''),
+      createdAt: now,
+      updatedAt: now,
+      lastUsedAt: now,
+    };
+    documents.unshift(nextDocument);
+  }
+
+  const sorted = sortDocumentsByRecent(documents).slice(0, MAX_DOCUMENTS_PER_USER);
+  documentsByUser.set(userId, sorted);
+  schedulePersistUsers();
+  return nextDocument;
+}
+
+function getUserDocumentById(userId, documentId) {
+  const normalizedId = sanitizeText(documentId, 120);
+  if (!normalizedId) return null;
+  const documents = getUserDocuments(userId);
+  return documents.find((item) => item?.id === normalizedId) || null;
+}
+
+function deleteUserDocumentById(userId, documentId) {
+  const normalizedId = sanitizeText(documentId, 120);
+  if (!normalizedId) return false;
+  const documents = getUserDocuments(userId);
+  const next = documents.filter((item) => item?.id !== normalizedId);
+  if (next.length === documents.length) return false;
+  documentsByUser.set(userId, sortDocumentsByRecent(next));
+  schedulePersistUsers();
+  return true;
+}
+
 function estimateTokensFromText(text) {
   if (!text) return 0;
   return Math.ceil(String(text).length / 4);
@@ -682,6 +823,8 @@ function persistPlatformState() {
       refreshTokens: [...refreshTokens.entries()],
       subscriptions: [...subscriptionsByUser.values()],
       usageByUserMonth: [...usageByUserMonth.values()],
+      freeExportUsageByUser: [...freeExportUsageByUser.entries()],
+      documentsByUser: [...documentsByUser.entries()],
       anonUsageByMonth: [...anonUsageByMonth.values()],
       paymentEventsByUser: [...paymentEventsByUser.entries()],
       processedWebhookEvents: [...processedWebhookEvents.entries()],
@@ -733,6 +876,43 @@ function loadPlatformState() {
         tokenCount: Number(u.tokenCount) || 0,
       };
       usageByUserMonth.set(`${record.userId}:${record.period}`, record);
+    }
+    const freeExportUsage = Array.isArray(parsed.freeExportUsageByUser) ? parsed.freeExportUsageByUser : [];
+    for (const item of freeExportUsage) {
+      if (!Array.isArray(item) || item.length !== 2) continue;
+      const userId = sanitizeText(item[0], 120);
+      if (!userId) continue;
+      const used = Math.max(Number(item[1]) || 0, 0);
+      freeExportUsageByUser.set(userId, used);
+    }
+    const storedDocuments = Array.isArray(parsed.documentsByUser) ? parsed.documentsByUser : [];
+    for (const item of storedDocuments) {
+      if (!Array.isArray(item) || item.length !== 2) continue;
+      const userId = sanitizeText(item[0], 120);
+      const docs = Array.isArray(item[1]) ? item[1] : [];
+      if (!userId || docs.length === 0) continue;
+      const normalized = [];
+      for (const doc of docs) {
+        const id = sanitizeText(doc?.id, 120);
+        const content = sanitizeText(doc?.document, 120000);
+        if (!id || !content) continue;
+        normalized.push({
+          id,
+          userId,
+          title: sanitizeText(doc?.title, 120) || '需求文档',
+          userRequirement: sanitizeText(doc?.userRequirement, MAX_REQUIREMENT_LENGTH),
+          scenario: sanitizeText(doc?.scenario, MAX_SCENARIO_LENGTH) || '通用产品',
+          document: content,
+          templateSlug: sanitizeText(doc?.templateSlug, 120),
+          sourceDocumentId: sanitizeText(doc?.sourceDocumentId, 120),
+          createdAt: sanitizeText(doc?.createdAt, 80) || nowIso(),
+          updatedAt: sanitizeText(doc?.updatedAt, 80) || nowIso(),
+          lastUsedAt: sanitizeText(doc?.lastUsedAt, 80) || sanitizeText(doc?.updatedAt, 80) || nowIso(),
+        });
+      }
+      if (normalized.length > 0) {
+        documentsByUser.set(userId, sortDocumentsByRecent(normalized).slice(0, MAX_DOCUMENTS_PER_USER));
+      }
     }
     const anonUsage = Array.isArray(parsed.anonUsageByMonth) ? parsed.anonUsageByMonth : [];
     for (const u of anonUsage) {
@@ -981,7 +1161,7 @@ function appendAnalyticsEvent(req, eventName, props = {}) {
 }
 
 function getPaddleApiBaseUrl() {
-  return PADDLE_ENV === 'live'
+  return PADDLE_ENV === 'live' || PADDLE_ENV === 'production'
     ? 'https://api.paddle.com'
     : 'https://sandbox-api.paddle.com';
 }
@@ -1140,8 +1320,10 @@ function verifyPaddleWebhookSignature(req) {
 function buildPlanResponse(userId) {
   const sub = subscriptionsByUser.get(userId);
   const plan = getUserPlan(userId);
+  const freeExportUsage = getFreeExportUsage(userId);
+  const canDownload = !PAYMENT_GATING_ENABLED || Boolean(plan.entitlements?.canDownload);
   const entitlements = {
-    canDownload: Boolean(plan.entitlements?.canDownload),
+    canDownload,
     canGenerate: true,
     canRevise: true,
   };
@@ -1158,6 +1340,10 @@ function buildPlanResponse(userId) {
       updatedAt: null,
     },
     quotaRemaining: getQuotaRemaining(userId),
+    freeExportQuotaTotal: freeExportUsage.total,
+    freeExportUsed: freeExportUsage.used,
+    freeExportRemaining: freeExportUsage.remaining,
+    paymentGatingEnabled: PAYMENT_GATING_ENABLED,
     limits: plan.limits,
     entitlements,
   };
@@ -1174,6 +1360,10 @@ function buildAnonymousPlanResponse(req) {
         reviseRemaining: 999999,
         tokenRemaining: limits.monthlyTokens,
       },
+      freeExportQuotaTotal: 0,
+      freeExportUsed: 0,
+      freeExportRemaining: 0,
+      paymentGatingEnabled: PAYMENT_GATING_ENABLED,
       entitlements: {
         canDownload: false,
         canGenerate: true,
@@ -1195,6 +1385,10 @@ function buildAnonymousPlanResponse(req) {
   return {
     plan: PLANS.free.id,
     quotaRemaining,
+    freeExportQuotaTotal: 0,
+    freeExportUsed: 0,
+    freeExportRemaining: 0,
+    paymentGatingEnabled: PAYMENT_GATING_ENABLED,
     entitlements: {
       canDownload: false,
       canGenerate: quotaRemaining.generateRemaining > 0 && quotaRemaining.tokenRemaining > 0,
@@ -3117,10 +3311,72 @@ app.get('/api/usage', requireAuth, asyncRoute(async (req, res) => {
     period: key,
     usage,
     quotaRemaining: planInfo.quotaRemaining,
+    freeExportQuotaTotal: planInfo.freeExportQuotaTotal,
+    freeExportUsed: planInfo.freeExportUsed,
+    freeExportRemaining: planInfo.freeExportRemaining,
+    paymentGatingEnabled: planInfo.paymentGatingEnabled,
     plan: planInfo.plan,
     limits: planInfo.limits,
     entitlements: planInfo.entitlements,
   });
+}));
+
+app.post('/api/documents/save', requireAuth, asyncRoute(async (req, res) => {
+  res.set(jsonHeader);
+  try {
+    const saved = upsertUserDocument(req.authUser.id, {
+      id: req.body?.id,
+      saveAsCopy: req.body?.saveAsCopy === true,
+      title: req.body?.title,
+      userRequirement: req.body?.userRequirement,
+      scenario: req.body?.scenario,
+      document: req.body?.document,
+      templateSlug: req.body?.templateSlug,
+      sourceDocumentId: req.body?.sourceDocumentId,
+    });
+    return res.json({
+      success: true,
+      document: {
+        ...buildDocumentSummary(saved),
+        document: saved.document,
+      },
+    });
+  } catch (error) {
+    const message = error?.message || '保存失败';
+    const code = error?.code || 'save_failed';
+    const status = code === 'invalid_params' ? 400 : 500;
+    return res.status(status).json({ success: false, code, message });
+  }
+}));
+
+app.get('/api/documents', requireAuth, asyncRoute(async (req, res) => {
+  res.set(jsonHeader);
+  const documents = sortDocumentsByRecent(getUserDocuments(req.authUser.id)).map(buildDocumentSummary);
+  return res.json({ success: true, documents });
+}));
+
+app.get('/api/documents/:id', requireAuth, asyncRoute(async (req, res) => {
+  res.set(jsonHeader);
+  const doc = getUserDocumentById(req.authUser.id, req.params?.id);
+  if (!doc) {
+    return res.status(404).json({ success: false, code: 'document_not_found', message: '文档不存在或已删除' });
+  }
+  return res.json({
+    success: true,
+    document: {
+      ...buildDocumentSummary(doc),
+      document: doc.document,
+    },
+  });
+}));
+
+app.delete('/api/documents/:id', requireAuth, asyncRoute(async (req, res) => {
+  res.set(jsonHeader);
+  const removed = deleteUserDocumentById(req.authUser.id, req.params?.id);
+  if (!removed) {
+    return res.status(404).json({ success: false, code: 'document_not_found', message: '文档不存在或已删除' });
+  }
+  return res.json({ success: true });
 }));
 
 app.post('/api/events', attachOptionalAuth, asyncRoute(async (req, res) => {
@@ -3522,6 +3778,7 @@ app.get('/api/health', (req, res) => {
     modelV3: MODEL_V3,
     modelR1: MODEL_R1,
     maxOutputTokens: MAX_OUTPUT_TOKENS,
+    paymentGatingEnabled: PAYMENT_GATING_ENABLED,
     paddleEnv: PADDLE_ENV,
     paddleConfigured: Boolean(PADDLE_API_KEY && PADDLE_WEBHOOK_SECRET && PADDLE_PRICE_ID_CNY && PADDLE_PRICE_ID_USD && PADDLE_SUCCESS_URL && PADDLE_CANCEL_URL),
     mailConfigured,
@@ -3565,7 +3822,7 @@ app.get('/api/ready', (req, res) => {
   } catch {
     checks.jobStoreWritable = false;
   }
-  const mustCheckPaddle = APP_ENV_PROFILE === 'prod';
+  const mustCheckPaddle = APP_ENV_PROFILE === 'prod' && PAYMENT_GATING_ENABLED;
   const mustCheckMail = APP_ENV_PROFILE === 'prod';
   const ready = checks.llmKeyLoaded
     && checks.userStoreWritable
@@ -4057,26 +4314,63 @@ app.post('/api/document/export', requireAuth, attachPlanInfo, asyncRoute(async (
   if (!document) {
     return res.status(400).json({ success: false, code: 'invalid_params', message: '缺少 document' });
   }
-  const canDownload = Boolean(req.planInfo?.entitlements?.canDownload);
-  if (!canDownload) {
+  if (!PAYMENT_GATING_ENABLED) {
+    const freeExportUsage = getFreeExportUsage(req.authUser.id);
+    appendAnalyticsEvent(req, 'export_success', {
+      plan: req.planInfo?.plan || 'free',
+      docChars: document.length,
+      paymentBypass: true,
+    });
+    return res.json({
+      success: true,
+      title,
+      document,
+      contentType: 'text/markdown;charset=utf-8',
+      freeExportRemaining: freeExportUsage.remaining,
+    });
+  }
+  const paidDownloadEnabled = Boolean(req.planInfo?.entitlements?.canDownload);
+  const freeExportUsage = getFreeExportUsage(req.authUser.id);
+  const canUseFreeExport = !paidDownloadEnabled && freeExportUsage.remaining > 0;
+  if (!paidDownloadEnabled && !canUseFreeExport) {
+    appendAnalyticsEvent(req, 'free_export_exhausted', {
+      plan: req.planInfo?.plan || 'free',
+      used: freeExportUsage.used,
+      total: freeExportUsage.total,
+    });
     return res.status(402).json({
       success: false,
       code: 'subscription_required',
-      message: '下载功能需开通月订阅',
+      message: '免费导出次数已用完，请开通订阅后导出',
       plan: req.planInfo?.plan,
       quotaRemaining: req.planInfo?.quotaRemaining,
+      freeExportQuotaTotal: freeExportUsage.total,
+      freeExportUsed: freeExportUsage.used,
+      freeExportRemaining: freeExportUsage.remaining,
       entitlements: req.planInfo?.entitlements,
     });
   }
+  let remainingForResponse = freeExportUsage.remaining;
   appendAnalyticsEvent(req, 'export_success', {
     plan: req.planInfo?.plan || 'free',
     docChars: document.length,
   });
+  if (canUseFreeExport) {
+    const consumed = consumeFreeExportUsage(req.authUser.id);
+    remainingForResponse = consumed.remaining;
+    appendAnalyticsEvent(req, 'free_export_used', {
+      plan: req.planInfo?.plan || 'free',
+      used: consumed.used,
+      total: consumed.total,
+      remaining: consumed.remaining,
+    });
+  }
   return res.json({
     success: true,
     title,
     document,
     contentType: 'text/markdown;charset=utf-8',
+    freeExportRemaining: remainingForResponse,
   });
 }));
 
@@ -4118,14 +4412,18 @@ if (!JWT_SECRET || JWT_SECRET === 'change-this-secret-in-prod') {
 if (SENTRY_DSN) {
   console.log('SENTRY_DSN 已配置（当前版本仅输出结构化错误日志，建议接入 SDK）。');
 }
-if (!PADDLE_API_KEY || !PADDLE_WEBHOOK_SECRET) {
-  console.warn('Paddle 支付关键配置缺失（PADDLE_API_KEY / PADDLE_WEBHOOK_SECRET）。');
-}
-if (!PADDLE_PRICE_ID_CNY || !PADDLE_PRICE_ID_USD) {
-  console.warn('Paddle 价格 ID 未完整配置（PADDLE_PRICE_ID_CNY / PADDLE_PRICE_ID_USD）。');
-}
-if (!PADDLE_SUCCESS_URL || !PADDLE_CANCEL_URL) {
-  console.warn('Paddle 回跳地址未配置（PADDLE_SUCCESS_URL / PADDLE_CANCEL_URL）。');
+if (PAYMENT_GATING_ENABLED) {
+  if (!PADDLE_API_KEY || !PADDLE_WEBHOOK_SECRET) {
+    console.warn('Paddle 支付关键配置缺失（PADDLE_API_KEY / PADDLE_WEBHOOK_SECRET）。');
+  }
+  if (!PADDLE_PRICE_ID_CNY || !PADDLE_PRICE_ID_USD) {
+    console.warn('Paddle 价格 ID 未完整配置（PADDLE_PRICE_ID_CNY / PADDLE_PRICE_ID_USD）。');
+  }
+  if (!PADDLE_SUCCESS_URL || !PADDLE_CANCEL_URL) {
+    console.warn('Paddle 回跳地址未配置（PADDLE_SUCCESS_URL / PADDLE_CANCEL_URL）。');
+  }
+} else {
+  console.log('PAYMENT_GATING_ENABLED=0，当前已关闭支付门禁（导出不限次）。');
 }
 if (!isMailServiceConfigured()) {
   console.warn('邮件重置密码配置缺失（RESEND_API_KEY / MAIL_FROM / RESET_PASSWORD_URL_BASE）。');
