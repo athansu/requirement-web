@@ -535,6 +535,10 @@ export default function App() {
               /
               {' '}
               <a href="/legal/privacy.html" target="_blank" rel="noreferrer">隐私政策</a>
+              {' '}
+              /
+              {' '}
+              <a href="/content/pricing.html" target="_blank" rel="noreferrer">定价</a>
             </p>
           </div>
         </div>

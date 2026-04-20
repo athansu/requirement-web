@@ -932,6 +932,10 @@ export function DocumentPage({
               /
               {' '}
               <a href="/legal/refund.html" target="_blank" rel="noreferrer">退款说明</a>
+              {' '}
+              /
+              {' '}
+              <a href="/content/pricing.html" target="_blank" rel="noreferrer">定价</a>
             </p>
           </div>
         </div>

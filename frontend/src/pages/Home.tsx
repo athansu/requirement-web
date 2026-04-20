@@ -964,6 +964,8 @@ export function Home({ onGenerate }: HomeProps) {
           {' · '}
           <a href="/content/cases.html" target="_blank" rel="noreferrer">案例对比</a>
           {' · '}
+          <a href="/content/pricing.html" target="_blank" rel="noreferrer">定价</a>
+          {' · '}
           <a href="/legal/terms.html" target="_blank" rel="noreferrer">用户协议</a>
           {' · '}
           <a href="/legal/privacy.html" target="_blank" rel="noreferrer">隐私政策</a>
