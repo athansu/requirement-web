@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://www.requirement-web.ai/sitemap.xml
+Sitemap: https://www.reqmd.com/sitemap.xml
