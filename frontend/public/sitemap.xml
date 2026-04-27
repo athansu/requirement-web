@@ -1,12 +1,13 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
-  <url><loc>https://www.reqmd.com/</loc></url>
-  <url><loc>https://www.reqmd.com/content/features.html</loc></url>
-  <url><loc>https://www.reqmd.com/content/pricing.html</loc></url>
-  <url><loc>https://www.reqmd.com/content/templates.html</loc></url>
-  <url><loc>https://www.reqmd.com/content/cases.html</loc></url>
-  <url><loc>https://www.reqmd.com/legal/terms.html</loc></url>
-  <url><loc>https://www.reqmd.com/legal/privacy.html</loc></url>
-  <url><loc>https://www.reqmd.com/legal/refund.html</loc></url>
-  <url><loc>https://www.reqmd.com/legal/contact.html</loc></url>
+  <url><loc>https://requirement-web.vercel.app/</loc></url>
+  <url><loc>https://requirement-web.vercel.app/pricing.html</loc></url>
+  <url><loc>https://requirement-web.vercel.app/content/features.html</loc></url>
+  <url><loc>https://requirement-web.vercel.app/content/pricing.html</loc></url>
+  <url><loc>https://requirement-web.vercel.app/content/templates.html</loc></url>
+  <url><loc>https://requirement-web.vercel.app/content/cases.html</loc></url>
+  <url><loc>https://requirement-web.vercel.app/legal/terms.html</loc></url>
+  <url><loc>https://requirement-web.vercel.app/legal/privacy.html</loc></url>
+  <url><loc>https://requirement-web.vercel.app/legal/refund.html</loc></url>
+  <url><loc>https://requirement-web.vercel.app/legal/contact.html</loc></url>
 </urlset>

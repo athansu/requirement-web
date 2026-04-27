@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://www.reqmd.com/sitemap.xml
+Sitemap: https://requirement-web.vercel.app/sitemap.xml
